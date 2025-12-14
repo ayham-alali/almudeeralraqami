@@ -60,11 +60,30 @@ async def execute_sql(db, sql: str, params=None):
             return await db.execute(sql)
 
 
+def _convert_sql_params(sql: str, params: list) -> str:
+    """Convert SQLite ? placeholders to PostgreSQL $1, $2, etc."""
+    if DB_TYPE == "postgresql" and params:
+        # Replace ? with $1, $2, etc.
+        param_index = 1
+        result = ""
+        i = 0
+        while i < len(sql):
+            if sql[i] == '?' and (i == 0 or sql[i-1] != "'"):
+                result += f"${param_index}"
+                param_index += 1
+            else:
+                result += sql[i]
+            i += 1
+        return result
+    return sql
+
+
 async def fetch_all(db, sql: str, params=None):
     """Fetch all rows"""
     sql = adapt_sql_for_db(sql)
     if DB_TYPE == "postgresql":
         if params:
+            sql = _convert_sql_params(sql, params)
             rows = await db.fetch(sql, *params)
         else:
             rows = await db.fetch(sql)
@@ -86,6 +105,7 @@ async def fetch_one(db, sql: str, params=None):
     sql = adapt_sql_for_db(sql)
     if DB_TYPE == "postgresql":
         if params:
+            sql = _convert_sql_params(sql, params)
             row = await db.fetchrow(sql, *params)
         else:
             row = await db.fetchrow(sql)

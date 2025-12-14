@@ -213,11 +213,12 @@ async def get_subscription(
     _: None = Depends(verify_admin)
 ):
     """Get details of a specific subscription"""
-    from database import get_license_key_by_id
+    from database import get_license_key_by_id, DB_TYPE
     from db_helper import get_db, fetch_one
     
     try:
         async with get_db() as db:
+            # Use fetch_one which handles SQL conversion automatically
             row = await fetch_one(db, "SELECT * FROM license_keys WHERE id = ?", [license_id])
             
             if not row:
@@ -226,8 +227,12 @@ async def get_subscription(
             subscription = dict(row)
             
             # Get the original license key (decrypted)
-            license_key = await get_license_key_by_id(license_id)
-            subscription["license_key"] = license_key
+            try:
+                license_key = await get_license_key_by_id(license_id)
+                subscription["license_key"] = license_key
+            except Exception as e:
+                # If key retrieval fails, set to None
+                subscription["license_key"] = None
             
             # Calculate days remaining
             if subscription.get("expires_at"):
@@ -246,7 +251,10 @@ async def get_subscription(
             if isinstance(last_request_date, str):
                 last_request_date = datetime.fromisoformat(last_request_date).date()
             elif last_request_date:
-                last_request_date = last_request_date.date() if hasattr(last_request_date, 'date') else last_request_date
+                if hasattr(last_request_date, 'date'):
+                    last_request_date = last_request_date.date()
+                elif isinstance(last_request_date, datetime):
+                    last_request_date = last_request_date.date()
             
             if last_request_date == today:
                 subscription["requests_today"] = subscription.get("requests_today", 0)
@@ -427,38 +435,63 @@ async def get_subscription_usage(
     _: None = Depends(verify_admin)
 ):
     """Get usage statistics for a subscription"""
-    import aiosqlite
-    from database import DATABASE_PATH
+    from database import DB_TYPE
+    from db_helper import get_db, fetch_all, fetch_one
     
     try:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            
-            # Get usage logs
-            async with db.execute("""
-                SELECT 
-                    DATE(created_at) as date,
-                    action_type,
-                    COUNT(*) as count
-                FROM usage_logs
-                WHERE license_key_id = ? 
-                AND created_at >= datetime('now', '-' || ? || ' days')
-                GROUP BY DATE(created_at), action_type
-                ORDER BY date DESC
-            """, (license_id, days)) as cursor:
-                rows = await cursor.fetchall()
-                usage_stats = [dict(row) for row in rows]
-            
-            # Get total counts
-            async with db.execute("""
-                SELECT 
-                    COUNT(*) as total_requests,
-                    COUNT(DISTINCT DATE(created_at)) as active_days
-                FROM usage_logs
-                WHERE license_key_id = ? 
-                AND created_at >= datetime('now', '-' || ? || ' days')
-            """, (license_id, days)) as cursor:
-                totals = dict(await cursor.fetchone())
+        async with get_db() as db:
+            if DB_TYPE == "postgresql":
+                # PostgreSQL query - use parameterized queries with proper INTERVAL syntax
+                usage_query = f"""
+                    SELECT 
+                        DATE(created_at) as date,
+                        action_type,
+                        COUNT(*) as count
+                    FROM usage_logs
+                    WHERE license_key_id = $1 
+                    AND created_at >= NOW() - INTERVAL '{days} days'
+                    GROUP BY DATE(created_at), action_type
+                    ORDER BY date DESC
+                """
+                
+                totals_query = f"""
+                    SELECT 
+                        COUNT(*) as total_requests,
+                        COUNT(DISTINCT DATE(created_at)) as active_days
+                    FROM usage_logs
+                    WHERE license_key_id = $1 
+                    AND created_at >= NOW() - INTERVAL '{days} days'
+                """
+                
+                usage_stats = await fetch_all(db, usage_query, [license_id])
+                totals_row = await fetch_one(db, totals_query, [license_id])
+                totals = totals_row if totals_row else {"total_requests": 0, "active_days": 0}
+            else:
+                # SQLite query
+                usage_query = """
+                    SELECT 
+                        DATE(created_at) as date,
+                        action_type,
+                        COUNT(*) as count
+                    FROM usage_logs
+                    WHERE license_key_id = ? 
+                    AND created_at >= datetime('now', '-' || ? || ' days')
+                    GROUP BY DATE(created_at), action_type
+                    ORDER BY date DESC
+                """
+                
+                totals_query = """
+                    SELECT 
+                        COUNT(*) as total_requests,
+                        COUNT(DISTINCT DATE(created_at)) as active_days
+                    FROM usage_logs
+                    WHERE license_key_id = ? 
+                    AND created_at >= datetime('now', '-' || ? || ' days')
+                """
+                
+                usage_stats = await fetch_all(db, usage_query, [license_id, days])
+                totals_row = await fetch_one(db, totals_query, [license_id, days])
+                totals = totals_row if totals_row else {"total_requests": 0, "active_days": 0}
             
             return {
                 "license_id": license_id,
