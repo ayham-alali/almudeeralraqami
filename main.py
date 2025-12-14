@@ -77,8 +77,19 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Migration check failed (may be first run): {e}")
         
         await init_database()
-        await init_enhanced_tables()  # Email & Telegram tables
-        await init_templates_and_customers()  # Templates, Customers, Analytics
+        try:
+            await init_enhanced_tables()  # Email & Telegram tables
+        except Exception as e:
+            logger.warning(f"Enhanced tables initialization warning (may already exist): {e}")
+        try:
+            from services.notification_service import init_notification_tables
+            await init_notification_tables()  # Notification tables
+        except Exception as e:
+            logger.warning(f"Notification tables initialization warning (may already exist): {e}")
+        try:
+            await init_templates_and_customers()  # Templates, Customers, Analytics
+        except Exception as e:
+            logger.warning(f"Templates initialization warning (may already exist): {e}")
         demo_key = await create_demo_license()
         if demo_key:
             logger.info(f"Demo license key created: {demo_key[:20]}...")

@@ -320,18 +320,6 @@ async def get_discord_guide():
     }
 
 
-# Initialize tables on import
-import asyncio
-
-async def _init():
-    await init_notification_tables()
-
-try:
-    loop = asyncio.get_event_loop()
-    if loop.is_running():
-        asyncio.create_task(_init())
-    else:
-        loop.run_until_complete(_init())
-except RuntimeError:
-    asyncio.run(_init())
+# Tables will be initialized in main.py lifespan function
+# No automatic initialization on import to avoid database connection issues
 
