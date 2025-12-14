@@ -231,7 +231,7 @@ async def generate_license_key(
             await conn.execute("""
                 INSERT INTO license_keys (key_hash, company_name, contact_email, expires_at, max_requests_per_day)
                 VALUES ($1, $2, $3, $4, $5)
-            """, key_hash, company_name, contact_email, expires_at.isoformat(), max_requests)
+            """, key_hash, company_name, contact_email, expires_at, max_requests)
         finally:
             await conn.close()
     else:
