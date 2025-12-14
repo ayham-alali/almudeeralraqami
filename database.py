@@ -297,25 +297,49 @@ async def validate_license_key(key: str) -> dict:
         return {"valid": False, "error": "تم تعطيل هذا الاشتراك"}
     
     # Check expiration
-    if row_dict["expires_at"]:
-        expires_at = datetime.fromisoformat(row_dict["expires_at"]) if isinstance(row_dict["expires_at"], str) else row_dict["expires_at"]
+    if row_dict.get("expires_at"):
+        if isinstance(row_dict["expires_at"], str):
+            expires_at = datetime.fromisoformat(row_dict["expires_at"].replace('Z', '+00:00'))
+        elif hasattr(row_dict["expires_at"], 'isoformat'):
+            expires_at = row_dict["expires_at"]
+        else:
+            expires_at = datetime.fromisoformat(str(row_dict["expires_at"]))
+        
         if datetime.now() > expires_at:
             return {"valid": False, "error": "انتهت صلاحية الاشتراك"}
     
     # Check daily rate limit
-    today = datetime.now().date().isoformat()
-    if row_dict["last_request_date"] == today:
-        if row_dict["requests_today"] >= row_dict["max_requests_per_day"]:
+    today = datetime.now().date()
+    last_request_date = None
+    if row_dict.get("last_request_date"):
+        if isinstance(row_dict["last_request_date"], str):
+            last_request_date = datetime.fromisoformat(row_dict["last_request_date"].split('T')[0]).date()
+        elif hasattr(row_dict["last_request_date"], 'date'):
+            last_request_date = row_dict["last_request_date"].date()
+        else:
+            last_request_date = datetime.fromisoformat(str(row_dict["last_request_date"]).split('T')[0]).date()
+    
+    if last_request_date == today:
+        if row_dict.get("requests_today", 0) >= row_dict.get("max_requests_per_day", 0):
             return {"valid": False, "error": "تم تجاوز الحد اليومي للطلبات"}
     
     # Prepare result
+    expires_at_str = None
+    if row_dict.get("expires_at"):
+        if isinstance(row_dict["expires_at"], str):
+            expires_at_str = row_dict["expires_at"]
+        elif hasattr(row_dict["expires_at"], 'isoformat'):
+            expires_at_str = row_dict["expires_at"].isoformat()
+        else:
+            expires_at_str = str(row_dict["expires_at"])
+    
     result = {
         "valid": True,
         "license_id": row_dict["id"],
         "company_name": row_dict["company_name"],
-        "expires_at": row_dict["expires_at"],
-        "requests_remaining": row_dict["max_requests_per_day"] - (
-            row_dict["requests_today"] if row_dict["last_request_date"] == today else 0
+        "expires_at": expires_at_str,
+        "requests_remaining": row_dict.get("max_requests_per_day", 0) - (
+            row_dict.get("requests_today", 0) if last_request_date == today else 0
         )
     }
     
