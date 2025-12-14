@@ -7,10 +7,29 @@ import asyncio
 import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
-import aiosqlite
 from logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# Database configuration
+DB_TYPE = os.getenv("DB_TYPE", "sqlite").lower()
+DATABASE_PATH = os.getenv("DATABASE_PATH", "almudeer.db")
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Import appropriate database driver
+if DB_TYPE == "postgresql":
+    try:
+        import asyncpg
+        POSTGRES_AVAILABLE = True
+        aiosqlite = None
+    except ImportError:
+        raise ImportError(
+            "PostgreSQL selected but asyncpg not installed. "
+            "Install with: pip install asyncpg"
+        )
+else:
+    import aiosqlite
+    POSTGRES_AVAILABLE = False
 
 # Import services
 from services.email_service import EmailService
@@ -27,8 +46,7 @@ from models import (
     get_inbox_messages,
     create_outbox_message,
     approve_outbox_message,
-    mark_outbox_sent,
-    DATABASE_PATH
+    mark_outbox_sent
 )
 from agent import process_message
 from message_filters import apply_filters
@@ -82,24 +100,48 @@ class MessagePoller:
         licenses = []
         
         try:
-            async with aiosqlite.connect(DATABASE_PATH) as db:
-                # Get licenses with email configs
-                async with db.execute("""
-                    SELECT DISTINCT license_key_id 
-                    FROM email_configs 
-                    WHERE is_active = 1
-                """) as cursor:
-                    rows = await cursor.fetchall()
-                    licenses.extend([row[0] for row in rows])
-                
-                # Get licenses with telegram configs
-                async with db.execute("""
-                    SELECT DISTINCT license_key_id 
-                    FROM telegram_configs 
-                    WHERE is_active = 1
-                """) as cursor:
-                    rows = await cursor.fetchall()
-                    licenses.extend([row[0] for row in rows])
+            if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
+                if not DATABASE_URL:
+                    logger.warning("DATABASE_URL not set for PostgreSQL")
+                    return []
+                conn = await asyncpg.connect(DATABASE_URL)
+                try:
+                    # Get licenses with email configs
+                    rows = await conn.fetch("""
+                        SELECT DISTINCT license_key_id 
+                        FROM email_configs 
+                        WHERE is_active = TRUE
+                    """)
+                    licenses.extend([row['license_key_id'] for row in rows])
+                    
+                    # Get licenses with telegram configs
+                    rows = await conn.fetch("""
+                        SELECT DISTINCT license_key_id 
+                        FROM telegram_configs 
+                        WHERE is_active = TRUE
+                    """)
+                    licenses.extend([row['license_key_id'] for row in rows])
+                finally:
+                    await conn.close()
+            else:
+                async with aiosqlite.connect(DATABASE_PATH) as db:
+                    # Get licenses with email configs
+                    async with db.execute("""
+                        SELECT DISTINCT license_key_id 
+                        FROM email_configs 
+                        WHERE is_active = 1
+                    """) as cursor:
+                        rows = await cursor.fetchall()
+                        licenses.extend([row[0] for row in rows])
+                    
+                    # Get licenses with telegram configs
+                    async with db.execute("""
+                        SELECT DISTINCT license_key_id 
+                        FROM telegram_configs 
+                        WHERE is_active = 1
+                    """) as cursor:
+                        rows = await cursor.fetchall()
+                        licenses.extend([row[0] for row in rows])
         
         except Exception as e:
             logger.error(f"Error getting active licenses: {e}")
