@@ -34,6 +34,11 @@ else:
 from db_helper import get_db, execute_sql, fetch_all, fetch_one, commit_db
 
 
+# Helpers to generate SQL that works on both SQLite and PostgreSQL
+ID_PK = "SERIAL PRIMARY KEY" if DB_TYPE == "postgresql" else "INTEGER PRIMARY KEY AUTOINCREMENT"
+TIMESTAMP_NOW = "TIMESTAMP DEFAULT NOW()" if DB_TYPE == "postgresql" else "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+
+
 async def init_enhanced_tables():
     """Initialize enhanced tables for Email & Telegram integration"""
     async with get_db() as db:
@@ -494,12 +499,16 @@ def simple_decrypt(encrypted: str) -> str:
 import asyncio
 
 async def init_templates_and_customers():
-    """Initialize templates and customer tables"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
+    """Initialize templates, customers, analytics and related tables.
+
+    Uses the generic db_helper layer so it works for both SQLite (dev)
+    and PostgreSQL (production).
+    """
+    async with get_db() as db:
         # WhatsApp Configuration
-        await db.execute("""
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS whatsapp_configs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL UNIQUE,
                 phone_number_id TEXT NOT NULL,
                 access_token TEXT NOT NULL,
@@ -508,16 +517,16 @@ async def init_templates_and_customers():
                 webhook_secret TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
                 auto_reply_enabled BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 updated_at TIMESTAMP,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
-        
+
         # Team Members (Multi-User Support)
-        await db.execute("""
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS team_members (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 email TEXT NOT NULL,
                 name TEXT NOT NULL,
@@ -526,33 +535,33 @@ async def init_templates_and_customers():
                 permissions TEXT,
                 is_active BOOLEAN DEFAULT TRUE,
                 last_login_at TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 invited_by INTEGER,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id),
                 FOREIGN KEY (invited_by) REFERENCES team_members(id),
                 UNIQUE(license_key_id, email)
             )
         """)
-        
+
         # Team Activity Log
-        await db.execute("""
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS team_activity_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 team_member_id INTEGER,
                 action TEXT NOT NULL,
                 details TEXT,
                 ip_address TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id),
                 FOREIGN KEY (team_member_id) REFERENCES team_members(id)
             )
         """)
-        
-        # Notifications
-        await db.execute("""
+
+        # Notifications (the main notifications table used by the dashboard)
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS notifications (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 type TEXT NOT NULL,
                 priority TEXT DEFAULT 'normal',
@@ -560,31 +569,31 @@ async def init_templates_and_customers():
                 message TEXT NOT NULL,
                 link TEXT,
                 is_read BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
-        
+
         # Quick Reply Templates
-        await db.execute("""
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS reply_templates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 shortcut TEXT NOT NULL,
                 title TEXT NOT NULL,
                 body TEXT NOT NULL,
                 category TEXT DEFAULT 'عام',
                 use_count INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id),
                 UNIQUE(license_key_id, shortcut)
             )
         """)
-        
+
         # Customer Profiles
-        await db.execute("""
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS customers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 name TEXT,
                 phone TEXT,
@@ -596,13 +605,13 @@ async def init_templates_and_customers():
                 last_contact_at TIMESTAMP,
                 sentiment_score REAL DEFAULT 0,
                 is_vip BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
-        
+
         # Link inbox messages to customers
-        await db.execute("""
+        await execute_sql(db, """
             CREATE TABLE IF NOT EXISTS customer_messages (
                 customer_id INTEGER,
                 inbox_message_id INTEGER,
@@ -611,11 +620,11 @@ async def init_templates_and_customers():
                 FOREIGN KEY (inbox_message_id) REFERENCES inbox_messages(id)
             )
         """)
-        
+
         # Analytics/Metrics tracking
-        await db.execute("""
+        await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS analytics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 date DATE NOT NULL,
                 messages_received INTEGER DEFAULT 0,
@@ -630,9 +639,9 @@ async def init_templates_and_customers():
                 UNIQUE(license_key_id, date)
             )
         """)
-        
+
         # User preferences (dark mode, notifications, etc.)
-        await db.execute("""
+        await execute_sql(db, """
             CREATE TABLE IF NOT EXISTS user_preferences (
                 license_key_id INTEGER PRIMARY KEY,
                 dark_mode BOOLEAN DEFAULT FALSE,
@@ -644,23 +653,23 @@ async def init_templates_and_customers():
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
-        
+
         # Performance indexes for analytics & customers
-        await db.execute("""
+        await execute_sql(db, """
             CREATE INDEX IF NOT EXISTS idx_analytics_license_date
             ON analytics(license_key_id, date)
         """)
-        await db.execute("""
+        await execute_sql(db, """
             CREATE INDEX IF NOT EXISTS idx_customers_license_last_contact
             ON customers(license_key_id, last_contact_at)
         """)
-        await db.execute("""
+        await execute_sql(db, """
             CREATE INDEX IF NOT EXISTS idx_notifications_license_created
             ON notifications(license_key_id, created_at)
         """)
 
-        await db.commit()
-        print("Templates, Customers & Analytics tables initialized")
+        await commit_db(db)
+        print("Templates, Customers, Analytics & Notifications tables initialized")
 
 
 # ============ Quick Reply Templates ============
