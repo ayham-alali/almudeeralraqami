@@ -18,36 +18,22 @@ class PerformanceMiddleware(BaseHTTPMiddleware):
         start_time = time.time()
         
         # Process request
-        try:
-            response = await call_next(request)
-        except Exception as e:
-            # Calculate time even for errors
-            process_time = time.time() - start_time
-            error_response = JSONResponse(
-                status_code=500,
-                content={
-                    "success": False,
-                    "error": "حدث خطأ في الخادم",
-                    "process_time_ms": round(process_time * 1000, 2)
-                }
-            )
-            error_response.headers["X-Process-Time"] = f"{process_time:.3f}"
-            return error_response
-        
+        response = await call_next(request)
+
         # Calculate processing time
         process_time = time.time() - start_time
-        
+
         # Add performance headers
         response.headers["X-Process-Time"] = f"{process_time:.3f}"
         response.headers["X-Response-Time-Ms"] = f"{round(process_time * 1000, 2)}"
-        
+
         # Add cache control headers for static/cacheable endpoints
         if request.url.path.startswith(("/health", "/")):
             response.headers["Cache-Control"] = "public, max-age=60"
-        
+
         # Add CORS headers for better browser caching
         response.headers["Access-Control-Max-Age"] = "86400"  # 24 hours
-        
+
         return response
 
 
