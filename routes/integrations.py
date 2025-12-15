@@ -3,20 +3,32 @@ Al-Mudeer - Integration Routes
 Email & Telegram configuration and inbox management
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Header, Request, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, Request, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 
 from models import (
-    save_email_config, get_email_config, get_email_password,
-    save_telegram_config, get_telegram_config,
-    save_inbox_message, update_inbox_analysis, get_inbox_messages,
-    update_inbox_status, create_outbox_message, approve_outbox_message,
-    mark_outbox_sent, get_pending_outbox, init_enhanced_tables
+    save_email_config,
+    get_email_config,
+    get_email_password,
+    save_telegram_config,
+    get_telegram_config,
+    save_inbox_message,
+    update_inbox_analysis,
+    get_inbox_messages,
+    update_inbox_status,
+    create_outbox_message,
+    approve_outbox_message,
+    mark_outbox_sent,
+    get_pending_outbox,
+    init_enhanced_tables,
 )
 from services import EmailService, EMAIL_PROVIDERS, TelegramService, TELEGRAM_SETUP_GUIDE
 from agent import process_message
+from workers import get_worker_status
+from security import sanitize_email, sanitize_string
+from dependencies import get_license_from_header
 
 router = APIRouter(prefix="/api/integrations", tags=["Integrations"])
 
@@ -62,22 +74,6 @@ class InboxMessageResponse(BaseModel):
     created_at: str
 
 
-# ============ Dependency ============
-
-async def get_license_from_header(x_license_key: str = Header(None, alias="X-License-Key")) -> dict:
-    """Get license info from header - imported from main app"""
-    from database import validate_license_key
-    
-    if not x_license_key:
-        raise HTTPException(status_code=401, detail="مفتاح الاشتراك مطلوب")
-    
-    result = await validate_license_key(x_license_key)
-    if not result["valid"]:
-        raise HTTPException(status_code=401, detail=result["error"])
-    
-    return result
-
-
 # ============ Email Routes ============
 
 @router.get("/email/providers")
@@ -92,8 +88,15 @@ async def configure_email(
     license: dict = Depends(get_license_from_header)
 ):
     """Configure email integration"""
+    # Sanitize email input early (keeps response shape identical)
+    sanitized_email = sanitize_email(config.email_address)
+    if not sanitized_email:
+        raise HTTPException(status_code=400, detail="البريد الإلكتروني غير صالح")
+
     # Get server settings from provider or use custom
-    provider = EMAIL_PROVIDERS.get(config.provider, EMAIL_PROVIDERS["custom"])
+    if config.provider not in EMAIL_PROVIDERS:
+        raise HTTPException(status_code=400, detail="مزود البريد غير مدعوم")
+    provider = EMAIL_PROVIDERS[config.provider]
     
     imap_server = config.imap_server or provider["imap_server"]
     smtp_server = config.smtp_server or provider["smtp_server"]
@@ -105,7 +108,7 @@ async def configure_email(
     
     # Test connection first
     email_service = EmailService(
-        email_address=config.email_address,
+        email_address=sanitized_email,
         password=config.password,
         imap_server=imap_server,
         smtp_server=smtp_server,
@@ -120,7 +123,7 @@ async def configure_email(
     # Save configuration
     config_id = await save_email_config(
         license_id=license["license_id"],
-        email_address=config.email_address,
+        email_address=sanitized_email,
         imap_server=imap_server,
         smtp_server=smtp_server,
         password=config.password,
@@ -151,9 +154,13 @@ async def test_email_connection(
 ):
     """Test email connection without saving"""
     provider = EMAIL_PROVIDERS.get(config.provider, EMAIL_PROVIDERS["custom"])
+
+    sanitized_email = sanitize_email(config.email_address)
+    if not sanitized_email:
+        raise HTTPException(status_code=400, detail="البريد الإلكتروني غير صالح")
     
     email_service = EmailService(
-        email_address=config.email_address,
+        email_address=sanitized_email,
         password=config.password,
         imap_server=config.imap_server or provider["imap_server"],
         smtp_server=config.smtp_server or provider["smtp_server"],
@@ -238,7 +245,7 @@ async def configure_telegram(
 ):
     """Configure Telegram bot integration"""
     # Test bot token
-    telegram_service = TelegramService(config.bot_token)
+    telegram_service = TelegramService(config.bot_token.strip())
     success, message, bot_info = await telegram_service.test_connection()
     
     if not success:
@@ -438,6 +445,22 @@ async def get_outbox(license: dict = Depends(get_license_from_header)):
     """Get outbox messages"""
     messages = await get_pending_outbox(license["license_id"])
     return {"messages": messages}
+
+
+# ============ Workers Status ============
+
+@router.get("/workers/status")
+async def workers_status(
+    license: dict = Depends(get_license_from_header),
+):
+    """
+    Lightweight status endpoint for background workers.
+
+    Returns a structure compatible with frontend WorkerStatus:
+    - email_polling: { last_check, status, next_check }
+    - telegram_polling: { last_check, status }
+    """
+    return {"workers": get_worker_status()}
 
 
 # ============ Background Tasks ============

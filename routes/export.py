@@ -3,7 +3,7 @@ Al-Mudeer - Export & Reports Routes
 PDF, Excel, CSV export functionality
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -12,22 +12,9 @@ import io
 import csv
 import json
 
+from dependencies import get_license_from_header
+
 router = APIRouter(prefix="/api/export", tags=["Export"])
-
-
-# ============ Dependency ============
-
-async def get_license_from_header(x_license_key: str = Header(None, alias="X-License-Key")) -> dict:
-    from database import validate_license_key
-    
-    if not x_license_key:
-        raise HTTPException(status_code=401, detail="مفتاح الاشتراك مطلوب")
-    
-    result = await validate_license_key(x_license_key)
-    if not result["valid"]:
-        raise HTTPException(status_code=401, detail=result["error"])
-    
-    return result
 
 
 # ============ Schemas ============

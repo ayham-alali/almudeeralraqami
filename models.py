@@ -136,6 +136,20 @@ async def init_enhanced_tables():
             )
         """)
         
+        # Performance indexes for frequent queries
+        await execute_sql(db, """
+            CREATE INDEX IF NOT EXISTS idx_inbox_license_status
+            ON inbox_messages(license_key_id, status)
+        """)
+        await execute_sql(db, """
+            CREATE INDEX IF NOT EXISTS idx_inbox_license_created
+            ON inbox_messages(license_key_id, created_at)
+        """)
+        await execute_sql(db, """
+            CREATE INDEX IF NOT EXISTS idx_outbox_license_status
+            ON outbox_messages(license_key_id, status)
+        """)
+
         await commit_db(db)
         print("Enhanced tables initialized")
 
@@ -631,6 +645,20 @@ async def init_templates_and_customers():
             )
         """)
         
+        # Performance indexes for analytics & customers
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_analytics_license_date
+            ON analytics(license_key_id, date)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_customers_license_last_contact
+            ON customers(license_key_id, last_contact_at)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_notifications_license_created
+            ON notifications(license_key_id, created_at)
+        """)
+
         await db.commit()
         print("Templates, Customers & Analytics tables initialized")
 

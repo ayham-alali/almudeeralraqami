@@ -230,8 +230,16 @@ async def get_subscription(
             try:
                 license_key = await get_license_key_by_id(license_id)
                 subscription["license_key"] = license_key
+                if not license_key:
+                    # Log why key is not available
+                    from logging_config import get_logger
+                    logger = get_logger(__name__)
+                    logger.warning(f"License key not found for subscription {license_id} - may be an old subscription created before encryption was added")
             except Exception as e:
-                # If key retrieval fails, set to None
+                # If key retrieval fails, set to None and log
+                from logging_config import get_logger
+                logger = get_logger(__name__)
+                logger.error(f"Error retrieving license key for subscription {license_id}: {e}", exc_info=True)
                 subscription["license_key"] = None
             
             # Calculate days remaining
@@ -361,6 +369,73 @@ async def update_subscription(
     except Exception as e:
         logger.error(f"Error updating subscription: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="حدث خطأ أثناء تحديث الاشتراك")
+
+
+@router.post("/{license_id}/regenerate-key")
+async def regenerate_subscription_key(
+    license_id: int,
+    _: None = Depends(verify_admin)
+):
+    """Regenerate and save license key for old subscriptions that don't have encrypted key"""
+    from database import DB_TYPE, hash_license_key
+    from db_helper import get_db, fetch_one, execute_sql, commit_db
+    from security_enhanced import encrypt_sensitive_data
+    from logging_config import get_logger
+    import secrets
+    
+    logger = get_logger(__name__)
+    
+    try:
+        async with get_db() as db:
+            # Check if subscription exists
+            row = await fetch_one(db, "SELECT * FROM license_keys WHERE id = ?", [license_id])
+            
+            if not row:
+                raise HTTPException(status_code=404, detail="الاشتراك غير موجود")
+            
+            subscription = dict(row)
+            
+            # Check if key already exists
+            if subscription.get('license_key_encrypted'):
+                raise HTTPException(
+                    status_code=400, 
+                    detail="هذا الاشتراك يحتوي بالفعل على مفتاح مشفر. لا يمكن إعادة إنشاء المفتاح."
+                )
+            
+            # Generate new key with same format
+            raw_key = f"MUDEER-{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}"
+            key_hash = hash_license_key(raw_key)
+            encrypted_key = encrypt_sensitive_data(raw_key)
+            
+            # Update the subscription with new key hash and encrypted key
+            if DB_TYPE == "postgresql":
+                await execute_sql(db, """
+                    UPDATE license_keys 
+                    SET key_hash = $1, license_key_encrypted = $2 
+                    WHERE id = $3
+                """, [key_hash, encrypted_key, license_id])
+            else:
+                await execute_sql(db, """
+                    UPDATE license_keys 
+                    SET key_hash = ?, license_key_encrypted = ? 
+                    WHERE id = ?
+                """, [key_hash, encrypted_key, license_id])
+            
+            await commit_db(db)
+            
+            logger.info(f"Regenerated license key for subscription {license_id}")
+            
+            return {
+                "success": True,
+                "license_key": raw_key,
+                "message": "تم إعادة إنشاء المفتاح بنجاح"
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error regenerating license key: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إعادة إنشاء المفتاح")
 
 
 @router.delete("/{license_id}")

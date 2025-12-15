@@ -270,6 +270,9 @@ async def generate_license_key(
 async def get_license_key_by_id(license_id: int) -> Optional[str]:
     """Get the original license key by ID (decrypted)"""
     from security_enhanced import decrypt_sensitive_data
+    from logging_config import get_logger
+    
+    logger = get_logger(__name__)
     
     if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
         conn = await asyncpg.connect(DATABASE_URL)
@@ -278,13 +281,20 @@ async def get_license_key_by_id(license_id: int) -> Optional[str]:
                 SELECT license_key_encrypted FROM license_keys WHERE id = $1
             """, license_id)
             
-            if not row or not row['license_key_encrypted']:
+            if not row:
+                logger.warning(f"Subscription {license_id} not found")
+                return None
+            
+            if not row.get('license_key_encrypted'):
+                logger.warning(f"License key encrypted field is NULL for subscription {license_id} - this is an old subscription created before encryption was added")
                 return None
             
             encrypted_key = row['license_key_encrypted']
             try:
-                return decrypt_sensitive_data(encrypted_key)
-            except Exception:
+                decrypted = decrypt_sensitive_data(encrypted_key)
+                return decrypted
+            except Exception as e:
+                logger.error(f"Failed to decrypt license key for subscription {license_id}: {e}")
                 return None
         finally:
             await conn.close()
@@ -296,13 +306,20 @@ async def get_license_key_by_id(license_id: int) -> Optional[str]:
             """, (license_id,)) as cursor:
                 row = await cursor.fetchone()
                 
-                if not row or not row['license_key_encrypted']:
+                if not row:
+                    logger.warning(f"Subscription {license_id} not found")
+                    return None
+                
+                if not row.get('license_key_encrypted'):
+                    logger.warning(f"License key encrypted field is NULL for subscription {license_id} - this is an old subscription created before encryption was added")
                     return None
                 
                 encrypted_key = row['license_key_encrypted']
                 try:
-                    return decrypt_sensitive_data(encrypted_key)
-                except Exception:
+                    decrypted = decrypt_sensitive_data(encrypted_key)
+                    return decrypted
+                except Exception as e:
+                    logger.error(f"Failed to decrypt license key for subscription {license_id}: {e}")
                     return None
 
 

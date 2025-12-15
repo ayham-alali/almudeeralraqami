@@ -38,7 +38,7 @@ from database import (
     save_crm_entry,
     get_crm_entries,
     get_entry_by_id,
-    generate_license_key
+    generate_license_key,
 )
 from schemas import (
     LicenseKeyValidation,
@@ -58,6 +58,7 @@ from routes import integrations_router, features_router, whatsapp_router, team_r
 from routes.subscription import router as subscription_router
 from security import sanitize_message, sanitize_string
 from workers import start_message_polling, stop_message_polling
+from db_pool import db_pool
 
 
 # ============ App Lifecycle ============
@@ -67,6 +68,13 @@ async def lifespan(app: FastAPI):
     """Initialize database on startup"""
     try:
         logger.info("Initializing Al-Mudeer backend...")
+
+        # Initialize database connection pool (SQLite now, PostgreSQL-ready)
+        try:
+            await db_pool.initialize()
+            logger.info(f"Database pool initialized using DB_TYPE={os.getenv('DB_TYPE', 'sqlite')}")
+        except Exception as e:
+            logger.warning(f"Database pool initialization failed (fallback to direct connections): {e}")
         
         # Run migrations first
         try:
@@ -118,6 +126,11 @@ async def lifespan(app: FastAPI):
         logger.info("Message polling workers stopped")
     except Exception as e:
         logger.warning(f"Error stopping workers: {e}")
+    try:
+        await db_pool.close()
+        logger.info("Database pool closed")
+    except Exception as e:
+        logger.warning(f"Error closing database pool: {e}")
     logger.info("Shutting down Al-Mudeer backend...")
 
 

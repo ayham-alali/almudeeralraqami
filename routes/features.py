@@ -3,17 +3,28 @@ Al-Mudeer - Feature Routes
 Templates, Customers, Analytics, Preferences, Voice Transcription
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Header, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
 from models import (
-    get_templates, save_template, delete_template, increment_template_usage,
-    get_customers, get_customer, update_customer, get_or_create_customer,
-    get_analytics_summary, update_daily_analytics,
-    get_preferences, update_preferences,
-    get_notifications, get_unread_count, mark_notification_read, 
-    mark_all_notifications_read, create_notification
+    get_templates,
+    save_template,
+    delete_template,
+    increment_template_usage,
+    get_customers,
+    get_customer,
+    update_customer,
+    get_or_create_customer,
+    get_analytics_summary,
+    update_daily_analytics,
+    get_preferences,
+    update_preferences,
+    get_notifications,
+    get_unread_count,
+    mark_notification_read,
+    mark_all_notifications_read,
+    create_notification,
 )
 from services.voice_service import (
     transcribe_voice_message,
@@ -22,23 +33,10 @@ from services.voice_service import (
     estimate_time_saved
 )
 from services.auto_categorization import categorize_message_dict, categorize_messages_batch
+from security import sanitize_email, sanitize_phone, sanitize_string
+from dependencies import get_license_from_header
 
 router = APIRouter(prefix="/api", tags=["Features"])
-
-
-# ============ Dependency ============
-
-async def get_license_from_header(x_license_key: str = Header(None, alias="X-License-Key")) -> dict:
-    from database import validate_license_key
-    
-    if not x_license_key:
-        raise HTTPException(status_code=401, detail="مفتاح الاشتراك مطلوب")
-    
-    result = await validate_license_key(x_license_key)
-    if not result["valid"]:
-        raise HTTPException(status_code=401, detail=result["error"])
-    
-    return result
 
 
 # ============ Templates Schemas ============
@@ -153,10 +151,30 @@ async def update_customer_detail(
     license: dict = Depends(get_license_from_header)
 ):
     """Update customer details"""
+    # Sanitize and normalize incoming data without changing the response shape
+    raw_data = data.dict(exclude_none=True)
+
+    if "email" in raw_data:
+        sanitized_email = sanitize_email(raw_data["email"])
+        if not sanitized_email and raw_data["email"]:
+            raise HTTPException(status_code=400, detail="البريد الإلكتروني غير صالح")
+        raw_data["email"] = sanitized_email
+
+    if "phone" in raw_data:
+        sanitized_phone = sanitize_phone(raw_data["phone"])
+        if not sanitized_phone and raw_data["phone"]:
+            raise HTTPException(status_code=400, detail="رقم الهاتف غير صالح")
+        raw_data["phone"] = sanitized_phone
+
+    # Light sanitization for free-text fields (notes/tags/company/name)
+    for field_name in ("name", "company", "notes", "tags"):
+        if field_name in raw_data and raw_data[field_name] is not None:
+            raw_data[field_name] = sanitize_string(str(raw_data[field_name]), max_length=1000)
+
     success = await update_customer(
         license["license_id"],
         customer_id,
-        **data.dict(exclude_none=True)
+        **raw_data
     )
     if not success:
         raise HTTPException(status_code=400, detail="فشل التحديث")

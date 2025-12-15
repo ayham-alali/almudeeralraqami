@@ -2,34 +2,21 @@
 Al-Mudeer - WhatsApp Business Integration Routes
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Header, Request, Response
+from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from pydantic import BaseModel, Field
 from typing import Optional
 
 from services.whatsapp_service import (
-    WhatsAppService, 
-    save_whatsapp_config, 
+    WhatsAppService,
+    save_whatsapp_config,
     get_whatsapp_config,
-    delete_whatsapp_config
+    delete_whatsapp_config,
 )
 from models import save_inbox_message, create_smart_notification
+from security import sanitize_phone, sanitize_string, sanitize_message
+from dependencies import get_license_from_header
 
 router = APIRouter(prefix="/api/integrations/whatsapp", tags=["WhatsApp"])
-
-
-# ============ Dependency ============
-
-async def get_license_from_header(x_license_key: str = Header(None, alias="X-License-Key")) -> dict:
-    from database import validate_license_key
-    
-    if not x_license_key:
-        raise HTTPException(status_code=401, detail="مفتاح الاشتراك مطلوب")
-    
-    result = await validate_license_key(x_license_key)
-    if not result["valid"]:
-        raise HTTPException(status_code=401, detail=result["error"])
-    
-    return result
 
 
 # ============ Schemas ============
@@ -113,14 +100,22 @@ async def save_config(
 ):
     """Save WhatsApp configuration"""
     import os
-    
+
+    # Basic hygiene on IDs/tokens without altering response shape
+    phone_number_id = sanitize_string(config.phone_number_id, max_length=128)
+    business_account_id = (
+        sanitize_string(config.business_account_id, max_length=128)
+        if config.business_account_id
+        else None
+    )
+
     verify_token = os.urandom(16).hex()
     
     config_id = await save_whatsapp_config(
         license_id=license["license_id"],
-        phone_number_id=config.phone_number_id,
+        phone_number_id=phone_number_id,
         access_token=config.access_token,
-        business_account_id=config.business_account_id,
+        business_account_id=business_account_id,
         verify_token=verify_token,
         auto_reply_enabled=config.auto_reply_enabled
     )
@@ -184,6 +179,13 @@ async def send_message(
     license: dict = Depends(get_license_from_header)
 ):
     """Send a WhatsApp message"""
+    # Sanitize phone and message input while preserving response shape
+    sanitized_to = sanitize_phone(msg.to)
+    if not sanitized_to:
+        raise HTTPException(status_code=400, detail="رقم الهاتف غير صالح")
+
+    sanitized_body = sanitize_message(msg.message, max_length=2000)
+
     config = await get_whatsapp_config(license["license_id"])
     
     if not config:
@@ -195,8 +197,8 @@ async def send_message(
     )
     
     result = await service.send_message(
-        to=msg.to,
-        message=msg.message,
+        to=sanitized_to,
+        message=sanitized_body,
         reply_to_message_id=msg.reply_to_message_id
     )
     

@@ -450,3 +450,26 @@ async def stop_message_polling():
         await _poller.stop()
         _poller = None
 
+
+def get_worker_status() -> Dict[str, Dict[str, Optional[str]]]:
+    """
+    Lightweight status snapshot for background workers.
+
+    This is intentionally simple and read-only so the frontend dashboard can
+    show whether polling is running without depending on internal details.
+    """
+    status = "running" if _poller is not None and _poller.running else "stopped"
+    now = datetime.utcnow().isoformat() + "Z"
+
+    # Shape is aligned with frontend WorkerStatus type (email_polling, telegram_polling)
+    return {
+        "email_polling": {
+            "last_check": now,
+            "status": status,
+            "next_check": None,
+        },
+        "telegram_polling": {
+            "last_check": now,
+            "status": status,
+        },
+    }

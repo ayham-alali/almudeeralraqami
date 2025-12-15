@@ -3,7 +3,7 @@ Al-Mudeer - Team Management Routes
 Multi-user support with role-based access control
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, List
 import hashlib
@@ -11,27 +11,19 @@ import secrets
 
 from models import (
     ROLES,
-    create_team_member, get_team_members, get_team_member, 
-    get_team_member_by_email, update_team_member, delete_team_member,
-    check_permission, log_team_activity, get_team_activity
+    create_team_member,
+    get_team_members,
+    get_team_member,
+    get_team_member_by_email,
+    update_team_member,
+    delete_team_member,
+    check_permission,
+    log_team_activity,
+    get_team_activity,
 )
+from dependencies import get_license_from_header
 
 router = APIRouter(prefix="/api/team", tags=["Team"])
-
-
-# ============ Dependency ============
-
-async def get_license_from_header(x_license_key: str = Header(None, alias="X-License-Key")) -> dict:
-    from database import validate_license_key
-    
-    if not x_license_key:
-        raise HTTPException(status_code=401, detail="مفتاح الاشتراك مطلوب")
-    
-    result = await validate_license_key(x_license_key)
-    if not result["valid"]:
-        raise HTTPException(status_code=401, detail=result["error"])
-    
-    return result
 
 
 # ============ Schemas ============

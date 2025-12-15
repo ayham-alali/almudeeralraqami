@@ -3,7 +3,7 @@ Al-Mudeer - Notification Routes
 Smart notifications, Slack/Discord integration, notification rules
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
@@ -21,25 +21,11 @@ from services.notification_service import (
     test_discord_webhook,
     NotificationPayload,
     NotificationPriority,
-    NotificationChannel
+    NotificationChannel,
 )
+from dependencies import get_license_from_header
 
 router = APIRouter(prefix="/api/notifications", tags=["Notifications"])
-
-
-# ============ Dependency ============
-
-async def get_license_from_header(x_license_key: str = Header(None, alias="X-License-Key")) -> dict:
-    from database import validate_license_key
-    
-    if not x_license_key:
-        raise HTTPException(status_code=401, detail="مفتاح الاشتراك مطلوب")
-    
-    result = await validate_license_key(x_license_key)
-    if not result["valid"]:
-        raise HTTPException(status_code=401, detail=result["error"])
-    
-    return result
 
 
 # ============ Integration Schemas ============
