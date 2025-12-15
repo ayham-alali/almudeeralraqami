@@ -13,6 +13,7 @@ import csv
 import json
 
 from dependencies import get_license_from_header
+from db_helper import get_db, fetch_all, fetch_one
 
 router = APIRouter(prefix="/api/export", tags=["Export"])
 
@@ -43,26 +44,26 @@ def get_date_range(start_date: str = None, end_date: str = None, days: int = 30)
 
 
 async def get_export_data(license_id: int, start: datetime, end: datetime):
-    """Fetch all data for export"""
-    import aiosqlite
-    from models import DATABASE_PATH
-    
+    """Fetch all data for export (works with SQLite and PostgreSQL)."""
     data = {
         "period": {
             "start": start.isoformat(),
-            "end": end.isoformat()
+            "end": end.isoformat(),
         },
         "analytics": {},
         "customers": [],
         "messages": [],
-        "crm_entries": []
+        "crm_entries": [],
     }
-    
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        
+
+    date_start = start.date().isoformat()
+    date_end = end.date().isoformat()
+
+    async with get_db() as db:
         # Analytics summary
-        async with db.execute("""
+        analytics_row = await fetch_one(
+            db,
+            """
             SELECT 
                 SUM(messages_received) as total_received,
                 SUM(messages_replied) as total_replied,
@@ -73,41 +74,48 @@ async def get_export_data(license_id: int, start: datetime, end: datetime):
                 SUM(time_saved_seconds) as time_saved
             FROM analytics 
             WHERE license_key_id = ? 
-            AND date BETWEEN ? AND ?
-        """, (license_id, start.date().isoformat(), end.date().isoformat())) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                data["analytics"] = dict(row)
-        
+              AND date BETWEEN ? AND ?
+            """,
+            [license_id, date_start, date_end],
+        )
+        if analytics_row:
+            data["analytics"] = analytics_row
+
         # Customers
-        async with db.execute("""
+        data["customers"] = await fetch_all(
+            db,
+            """
             SELECT * FROM customers 
             WHERE license_key_id = ?
             ORDER BY total_messages DESC
-        """, (license_id,)) as cursor:
-            rows = await cursor.fetchall()
-            data["customers"] = [dict(row) for row in rows]
-        
+            """,
+            [license_id],
+        )
+
         # Inbox messages in date range
-        async with db.execute("""
+        data["messages"] = await fetch_all(
+            db,
+            """
             SELECT * FROM inbox_messages 
             WHERE license_key_id = ?
-            AND created_at BETWEEN ? AND ?
+              AND created_at BETWEEN ? AND ?
             ORDER BY created_at DESC
-        """, (license_id, start.isoformat(), end.isoformat())) as cursor:
-            rows = await cursor.fetchall()
-            data["messages"] = [dict(row) for row in rows]
-        
+            """,
+            [license_id, start.isoformat(), end.isoformat()],
+        )
+
         # CRM entries in date range
-        async with db.execute("""
+        data["crm_entries"] = await fetch_all(
+            db,
+            """
             SELECT * FROM crm_entries 
             WHERE license_key_id = ?
-            AND created_at BETWEEN ? AND ?
+              AND created_at BETWEEN ? AND ?
             ORDER BY created_at DESC
-        """, (license_id, start.isoformat(), end.isoformat())) as cursor:
-            rows = await cursor.fetchall()
-            data["crm_entries"] = [dict(row) for row in rows]
-    
+            """,
+            [license_id, start.isoformat(), end.isoformat()],
+        )
+
     return data
 
 

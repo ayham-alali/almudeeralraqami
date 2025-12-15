@@ -6,6 +6,7 @@ Templates, Customers, Analytics, Preferences, Voice Transcription
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from pydantic import BaseModel, Field
 from typing import Optional, List
+from datetime import datetime, timedelta
 
 from models import (
     get_templates,
@@ -35,6 +36,7 @@ from services.voice_service import (
 from services.auto_categorization import categorize_message_dict, categorize_messages_batch
 from security import sanitize_email, sanitize_phone, sanitize_string
 from dependencies import get_license_from_header, get_optional_license_from_header
+from db_helper import get_db, fetch_all
 
 router = APIRouter(prefix="/api", tags=["Features"])
 
@@ -199,21 +201,23 @@ async def get_chart_data(
     days: int = 7,
     license: dict = Depends(get_license_from_header)
 ):
-    """Get daily data for charts"""
-    import aiosqlite
-    from models import DATABASE_PATH
-    
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("""
+    """Get daily data for charts (works with SQLite and PostgreSQL)."""
+    cutoff_date = (datetime.utcnow().date() - timedelta(days=days)).isoformat()
+
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
             SELECT date, messages_received, messages_replied, auto_replies
             FROM analytics 
             WHERE license_key_id = ? 
-            AND date >= date('now', ?)
+              AND date >= ?
             ORDER BY date ASC
-        """, (license["license_id"], f'-{days} days')) as cursor:
-            rows = await cursor.fetchall()
-            return {"data": [dict(row) for row in rows]}
+            """,
+            [license["license_id"], cutoff_date],
+        )
+
+    return {"data": rows}
 
 
 # ============ Preferences Schemas ============

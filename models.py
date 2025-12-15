@@ -5,7 +5,7 @@ Supports both SQLite (development) and PostgreSQL (production)
 """
 
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List
 import json
 
@@ -887,11 +887,18 @@ async def update_daily_analytics(
 
 
 async def get_analytics_summary(license_id: int, days: int = 30) -> dict:
-    """Get analytics summary for dashboard"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        db.row_factory = aiosqlite.Row
-        
-        async with db.execute("""
+    """
+    Get analytics summary for dashboard.
+
+    Uses the unified db_helper layer so it works with both SQLite and PostgreSQL.
+    """
+    # Calculate cutoff date in Python to keep SQL cross-database
+    cutoff_date = (datetime.utcnow().date() - timedelta(days=days)).isoformat()
+
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
+            """
             SELECT 
                 SUM(messages_received) as total_received,
                 SUM(messages_replied) as total_replied,
@@ -901,32 +908,35 @@ async def get_analytics_summary(license_id: int, days: int = 30) -> dict:
                 SUM(neutral_sentiment) as neutral,
                 SUM(time_saved_seconds) as time_saved
             FROM analytics 
-            WHERE license_key_id = ? 
-            AND date >= date('now', ?)
-        """, (license_id, f'-{days} days')) as cursor:
-            row = await cursor.fetchone()
-            
-            if row:
-                data = dict(row)
-                total_sentiment = (data['positive'] or 0) + (data['negative'] or 0) + (data['neutral'] or 0)
-                
-                return {
-                    "total_messages": data['total_received'] or 0,
-                    "total_replied": data['total_replied'] or 0,
-                    "auto_replies": data['total_auto'] or 0,
-                    "time_saved_hours": round((data['time_saved'] or 0) / 3600, 1),
-                    "satisfaction_rate": round((data['positive'] or 0) / max(total_sentiment, 1) * 100),
-                    "response_rate": round((data['total_replied'] or 0) / max(data['total_received'] or 1, 1) * 100)
-                }
-            
-            return {
-                "total_messages": 0,
-                "total_replied": 0,
-                "auto_replies": 0,
-                "time_saved_hours": 0,
-                "satisfaction_rate": 0,
-                "response_rate": 0
-            }
+            WHERE license_key_id = ?
+              AND date >= ?
+            """,
+            [license_id, cutoff_date],
+        )
+
+    if row:
+        data = row
+        total_sentiment = (data.get("positive") or 0) + (data.get("negative") or 0) + (data.get("neutral") or 0)
+
+        return {
+            "total_messages": data.get("total_received") or 0,
+            "total_replied": data.get("total_replied") or 0,
+            "auto_replies": data.get("total_auto") or 0,
+            "time_saved_hours": round((data.get("time_saved") or 0) / 3600, 1),
+            "satisfaction_rate": round((data.get("positive") or 0) / max(total_sentiment, 1) * 100),
+            "response_rate": round(
+                (data.get("total_replied") or 0) / max(data.get("total_received") or 1, 1) * 100
+            ),
+        }
+
+    return {
+        "total_messages": 0,
+        "total_replied": 0,
+        "auto_replies": 0,
+        "time_saved_hours": 0,
+        "satisfaction_rate": 0,
+        "response_rate": 0,
+    }
 
 
 # ============ User Preferences ============
