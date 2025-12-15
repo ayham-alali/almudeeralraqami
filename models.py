@@ -1031,45 +1031,55 @@ async def get_notifications(license_id: int, unread_only: bool = False, limit: i
 
 async def get_unread_count(license_id: int) -> int:
     """Get count of unread notifications"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        async with db.execute(
-            "SELECT COUNT(*) FROM notifications WHERE license_key_id = ? AND is_read = FALSE",
-            (license_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            return row[0] if row else 0
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
+            "SELECT COUNT(*) AS cnt FROM notifications WHERE license_key_id = ? AND is_read = FALSE",
+            [license_id],
+        )
+        return int(row.get("cnt", 0)) if row else 0
 
 
 async def mark_notification_read(license_id: int, notification_id: int) -> bool:
     """Mark a notification as read"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute(
+    async with get_db() as db:
+        await execute_sql(
+            db,
             "UPDATE notifications SET is_read = TRUE WHERE id = ? AND license_key_id = ?",
-            (notification_id, license_id)
+            [notification_id, license_id],
         )
-        await db.commit()
+        await commit_db(db)
         return True
 
 
 async def mark_all_notifications_read(license_id: int) -> bool:
     """Mark all notifications as read"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute(
+    async with get_db() as db:
+        await execute_sql(
+            db,
             "UPDATE notifications SET is_read = TRUE WHERE license_key_id = ?",
-            (license_id,)
+            [license_id],
         )
-        await db.commit()
+        await commit_db(db)
         return True
 
 
 async def delete_old_notifications(days: int = 30):
     """Delete notifications older than specified days"""
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute(
-            "DELETE FROM notifications WHERE created_at < datetime('now', ?)",
-            (f'-{days} days',)
-        )
-        await db.commit()
+    async with get_db() as db:
+        # Use a cross-database friendly cutoff timestamp
+        cutoff_sql = "CURRENT_TIMESTAMP - INTERVAL '%s days'" if DB_TYPE == "postgresql" else "datetime('now', ?)"
+        if DB_TYPE == "postgresql":
+            # In Postgres we can inline the interval, no parameters needed for the interval itself
+            sql = f"DELETE FROM notifications WHERE created_at < {cutoff_sql}"
+            await execute_sql(db, sql, [days])
+        else:
+            await execute_sql(
+                db,
+                "DELETE FROM notifications WHERE created_at < datetime('now', ?)",
+                [f"-{days} days"],
+            )
+        await commit_db(db)
 
 
 # ============ Team Management ============
