@@ -116,9 +116,10 @@ class EmailService:
         
         def _fetch():
             nonlocal emails
+            mail = None
             try:
-                # Connect to IMAP
-                mail = imaplib.IMAP4_SSL(self.imap_server, self.imap_port)
+                # Connect to IMAP with timeout
+                mail = imaplib.IMAP4_SSL(self.imap_server, self.imap_port, timeout=30)
                 mail.login(self.email_address, self.password)
                 mail.select(folder)
                 
@@ -164,8 +165,14 @@ class EmailService:
                         continue
                 
                 mail.logout()
+                mail = None
                 
             except Exception as e:
+                if mail:
+                    try:
+                        mail.logout()
+                    except:
+                        pass
                 print(f"IMAP Error: {e}")
                 raise
         
@@ -200,56 +207,101 @@ class EmailService:
                 text_part = MIMEText(body, 'plain', 'utf-8')
                 msg.attach(text_part)
                 
-                # Connect and send
+                # Connect and send with timeout
+                server = None
                 if self.smtp_port == 465:
-                    server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port)
+                    server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, timeout=30)
                 else:
-                    server = smtplib.SMTP(self.smtp_server, self.smtp_port)
+                    server = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30)
                     server.starttls()
                 
                 server.login(self.email_address, self.password)
                 server.send_message(msg)
                 server.quit()
+                server = None
                 
                 return True
                 
             except Exception as e:
+                if server:
+                    try:
+                        server.quit()
+                    except:
+                        pass
                 print(f"SMTP Error: {e}")
                 raise
         
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _send)
     
-    async def test_connection(self) -> Tuple[bool, str]:
-        """Test IMAP and SMTP connections"""
+    async def test_connection(self, timeout: int = 15) -> Tuple[bool, str]:
+        """Test IMAP and SMTP connections with timeout"""
         
         def _test():
             errors = []
+            mail = None
+            server = None
             
-            # Test IMAP
             try:
-                mail = imaplib.IMAP4_SSL(self.imap_server, self.imap_port)
-                mail.login(self.email_address, self.password)
-                mail.logout()
+                # Test IMAP with timeout
+                try:
+                    mail = imaplib.IMAP4_SSL(self.imap_server, self.imap_port, timeout=timeout)
+                    mail.login(self.email_address, self.password)
+                    mail.logout()
+                    mail = None
+                except Exception as e:
+                    if mail:
+                        try:
+                            mail.logout()
+                        except:
+                            pass
+                    errors.append(f"IMAP: {str(e)}")
+                
+                # Test SMTP with timeout
+                try:
+                    if self.smtp_port == 465:
+                        server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port, timeout=timeout)
+                    else:
+                        server = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=timeout)
+                        server.starttls()
+                    server.login(self.email_address, self.password)
+                    server.quit()
+                    server = None
+                except Exception as e:
+                    if server:
+                        try:
+                            server.quit()
+                        except:
+                            pass
+                    errors.append(f"SMTP: {str(e)}")
+                
             except Exception as e:
-                errors.append(f"IMAP: {str(e)}")
-            
-            # Test SMTP
-            try:
-                if self.smtp_port == 465:
-                    server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port)
-                else:
-                    server = smtplib.SMTP(self.smtp_server, self.smtp_port)
-                    server.starttls()
-                server.login(self.email_address, self.password)
-                server.quit()
-            except Exception as e:
-                errors.append(f"SMTP: {str(e)}")
+                # Cleanup on any unexpected error
+                if mail:
+                    try:
+                        mail.logout()
+                    except:
+                        pass
+                if server:
+                    try:
+                        server.quit()
+                    except:
+                        pass
+                errors.append(f"خطأ غير متوقع: {str(e)}")
             
             return errors
         
-        loop = asyncio.get_event_loop()
-        errors = await loop.run_in_executor(None, _test)
+        try:
+            loop = asyncio.get_event_loop()
+            # Add additional timeout wrapper to prevent hanging
+            errors = await asyncio.wait_for(
+                loop.run_in_executor(None, _test),
+                timeout=timeout + 5  # Add 5 seconds buffer
+            )
+        except asyncio.TimeoutError:
+            return False, f"انتهت مهلة الاتصال ({timeout} ثانية). تحقق من صحة الإعدادات والخادم."
+        except Exception as e:
+            return False, f"خطأ في الاتصال: {str(e)}"
         
         if errors:
             return False, "; ".join(errors)
