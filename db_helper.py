@@ -49,7 +49,9 @@ async def execute_sql(db, sql: str, params=None):
     """Execute SQL with proper parameter handling"""
     sql = adapt_sql_for_db(sql)
     if DB_TYPE == "postgresql":
+        # Convert SQLite-style ? placeholders to $1, $2, ... for asyncpg
         if params:
+            sql = _convert_sql_params(sql, params)
             return await db.execute(sql, *params)
         else:
             return await db.execute(sql)
