@@ -3,7 +3,10 @@ Al-Mudeer - Integration Routes
 Email & Telegram configuration and inbox management
 """
 
+import os
+import html
 from fastapi import APIRouter, HTTPException, Depends, Request, BackgroundTasks
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
@@ -118,6 +121,10 @@ async def gmail_oauth_callback(
     request: Request
 ):
     """Handle OAuth 2.0 callback from Google"""
+    # Get frontend URL for postMessage target origin (used in all responses)
+    frontend_url = os.getenv("FRONTEND_URL", "https://almudeer.royaraqamia.com")
+    frontend_origin = frontend_url.rstrip('/')
+    
     try:
         # Decode state to get license_id
         state_data = GmailOAuthService.decode_state(state)
@@ -164,18 +171,206 @@ async def gmail_oauth_callback(
             check_interval=5  # Default
         )
         
-        # Return success page (frontend will handle redirect)
-        return {
-            "success": True,
-            "message": "تم ربط حساب Gmail بنجاح",
-            "email": email_address,
-            "config_id": config_id
-        }
+        # Return HTML page that sends postMessage to parent window
+        html_content = f"""
+        <!DOCTYPE html>
+        <html dir="rtl" lang="ar">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>تم ربط Gmail بنجاح</title>
+            <style>
+                body {{
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                }}
+                .container {{
+                    text-align: center;
+                    padding: 2rem;
+                }}
+                .success-icon {{
+                    font-size: 4rem;
+                    margin-bottom: 1rem;
+                }}
+                h1 {{
+                    margin: 0.5rem 0;
+                }}
+                p {{
+                    opacity: 0.9;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="success-icon">✅</div>
+                <h1>تم ربط حساب Gmail بنجاح!</h1>
+                <p>{email_address}</p>
+                <p>يمكنك إغلاق هذه النافذة الآن.</p>
+            </div>
+            <script>
+                // Send success message to parent window
+                if (window.opener) {{
+                    window.opener.postMessage({{
+                        type: 'GMAIL_OAUTH_SUCCESS',
+                        message: 'تم ربط حساب Gmail بنجاح',
+                        email: '{email_address}',
+                        config_id: {config_id}
+                    }}, '{frontend_origin}');
+                    
+                    // Close popup after a short delay
+                    setTimeout(() => {{
+                        window.close();
+                    }}, 1500);
+                }} else {{
+                    // If no opener, show message and redirect
+                    setTimeout(() => {{
+                        window.location.href = '{frontend_origin}/dashboard/integrations';
+                    }}, 2000);
+                }}
+            </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content)
         
-    except HTTPException:
-        raise
+    except HTTPException as e:
+        # Return error HTML page
+        error_html = f"""
+        <!DOCTYPE html>
+        <html dir="rtl" lang="ar">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>خطأ في ربط Gmail</title>
+            <style>
+                body {{
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+                    color: white;
+                }}
+                .container {{
+                    text-align: center;
+                    padding: 2rem;
+                }}
+                .error-icon {{
+                    font-size: 4rem;
+                    margin-bottom: 1rem;
+                }}
+                h1 {{
+                    margin: 0.5rem 0;
+                }}
+                p {{
+                    opacity: 0.9;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="error-icon">❌</div>
+                <h1>فشل ربط حساب Gmail</h1>
+                <p>{html.escape(str(e.detail))}</p>
+                <p>يرجى المحاولة مرة أخرى.</p>
+            </div>
+            <script>
+                // Send error message to parent window
+                if (window.opener) {{
+                    window.opener.postMessage({{
+                        type: 'GMAIL_OAUTH_ERROR',
+                        message: {repr(str(e.detail))}
+                    }}, '{frontend_origin}');
+                    
+                    // Close popup after a short delay
+                    setTimeout(() => {{
+                        window.close();
+                    }}, 2000);
+                }} else {{
+                    // If no opener, redirect
+                    setTimeout(() => {{
+                        window.location.href = '{frontend_origin}/dashboard/integrations';
+                    }}, 2000);
+                }}
+            </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=error_html, status_code=e.status_code)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"فشل ربط Gmail: {str(e)}")
+        # Return error HTML page for unexpected errors
+        error_html = f"""
+        <!DOCTYPE html>
+        <html dir="rtl" lang="ar">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>خطأ في ربط Gmail</title>
+            <style>
+                body {{
+                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+                    color: white;
+                }}
+                .container {{
+                    text-align: center;
+                    padding: 2rem;
+                }}
+                .error-icon {{
+                    font-size: 4rem;
+                    margin-bottom: 1rem;
+                }}
+                h1 {{
+                    margin: 0.5rem 0;
+                }}
+                p {{
+                    opacity: 0.9;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="error-icon">❌</div>
+                <h1>فشل ربط حساب Gmail</h1>
+                <p>فشل ربط Gmail: {html.escape(str(e))}</p>
+                <p>يرجى المحاولة مرة أخرى.</p>
+            </div>
+            <script>
+                // Send error message to parent window
+                if (window.opener) {{
+                    window.opener.postMessage({{
+                        type: 'GMAIL_OAUTH_ERROR',
+                        message: {repr(f'فشل ربط Gmail: {str(e)}')}
+                    }}, '{frontend_origin}');
+                    
+                    // Close popup after a short delay
+                    setTimeout(() => {{
+                        window.close();
+                    }}, 2000);
+                }} else {{
+                    // If no opener, redirect
+                    setTimeout(() => {{
+                        window.location.href = '{frontend_origin}/dashboard/integrations';
+                    }}, 2000);
+                }}
+            </script>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=error_html, status_code=400)
 
 
 @router.post("/email/config")
