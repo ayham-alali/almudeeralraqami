@@ -71,7 +71,7 @@ class EmailService:
         # Gmail app password required (check for common indicators)
         if any(keyword in error_lower for keyword in ['application-specific', 'app password', 'password required', 'less secure']):
             if 'gmail' in self.imap_server.lower() or 'google' in self.imap_server.lower() or 'google' in error_lower:
-                return f"{protocol}: يتطلب كلمة مرور التطبيق (App Password). يرجى إنشاء كلمة مرور التطبيق من إعدادات Google: https://support.google.com/accounts/answer/185833"
+                return f"{protocol}: ⚠️ Gmail يتطلب كلمة مرور التطبيق (App Password) وليس كلمة المرور العادية! الخطوات: 1) فعّل التحقق بخطوتين في حساب Google 2) اذهب إلى: https://myaccount.google.com/apppasswords 3) أنشئ كلمة مرور جديدة للتطبيق 4) استخدم كلمة مرور التطبيق (16 حرف) بدلاً من كلمة المرور العادية في هذا الحقل."
             else:
                 return f"{protocol}: يتطلب كلمة مرور التطبيق. يرجى التحقق من إعدادات حساب البريد."
         
@@ -79,9 +79,13 @@ class EmailService:
         if any(keyword in error_lower for keyword in ['authentication failed', 'invalid credentials', 'login failed', 'bad credentials']):
             return f"{protocol}: فشل تسجيل الدخول. يرجى التحقق من البريد الإلكتروني وكلمة المرور."
         
-        # Network unreachable
+        # Network unreachable (but only show if not already showing app password error for Gmail)
         if any(keyword in error_lower for keyword in ['network is unreachable', 'errno 101', 'connection refused', 'errno 111', 'connection error']):
-            return f"{protocol}: لا يمكن الوصول إلى الخادم. تحقق من الاتصال بالإنترنت وإعدادات الخادم ({self.smtp_server if protocol == 'SMTP' else self.imap_server})."
+            server_name = self.smtp_server if protocol == 'SMTP' else self.imap_server
+            # For Gmail, if there's a network error, it might be due to wrong password type
+            if 'gmail' in server_name.lower() or 'google' in server_name.lower():
+                return f"{protocol}: خطأ في الاتصال. إذا كنت تستخدم Gmail، تأكد من استخدام كلمة مرور التطبيق (App Password) وليس كلمة المرور العادية. انظر: https://myaccount.google.com/apppasswords"
+            return f"{protocol}: لا يمكن الوصول إلى الخادم. تحقق من الاتصال بالإنترنت وإعدادات الخادم ({server_name})."
         
         # Connection timeout
         if any(keyword in error_lower for keyword in ['timed out', 'timeout', 'connection timeout']):
