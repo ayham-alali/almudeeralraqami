@@ -151,6 +151,25 @@ async def init_enhanced_tables():
             )
         """)
         
+        # Telegram Phone Sessions (MTProto for user accounts)
+        await execute_sql(db, """
+            CREATE TABLE IF NOT EXISTS telegram_phone_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key_id INTEGER UNIQUE NOT NULL,
+                phone_number TEXT NOT NULL,
+                session_data_encrypted TEXT NOT NULL,
+                user_id TEXT,
+                user_first_name TEXT,
+                user_last_name TEXT,
+                user_username TEXT,
+                is_active BOOLEAN DEFAULT TRUE,
+                last_synced_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
+            )
+        """)
+        
         # Telegram Chat Sessions
         await execute_sql(db, """
             CREATE TABLE IF NOT EXISTS telegram_chats (
@@ -202,9 +221,21 @@ async def save_email_config(
     check_interval: int = 5
 ) -> int:
     """Save or update email configuration with OAuth 2.0 tokens (Gmail only)."""
+    from db_helper import DB_TYPE
+
     # Encrypt OAuth tokens
     encrypted_access_token = simple_encrypt(access_token) if access_token else None
     encrypted_refresh_token = simple_encrypt(refresh_token) if refresh_token else None
+
+    # For PostgreSQL (asyncpg), pass a real datetime object.
+    # For SQLite, store ISO string for readability/backward compatibility.
+    if token_expires_at:
+        if DB_TYPE == "postgresql":
+            expires_value = token_expires_at
+        else:
+            expires_value = token_expires_at.isoformat()
+    else:
+        expires_value = None
 
     async with get_db() as db:
         # Check if config exists
@@ -234,7 +265,7 @@ async def save_email_config(
                     smtp_port,
                     encrypted_access_token,
                     encrypted_refresh_token,
-                    token_expires_at.isoformat() if token_expires_at else None,
+                    expires_value,
                     auto_reply,
                     check_interval,
                     license_id,
@@ -261,7 +292,7 @@ async def save_email_config(
                 smtp_port,
                 encrypted_access_token,
                 encrypted_refresh_token,
-                token_expires_at.isoformat() if token_expires_at else None,
+                expires_value,
                 auto_reply,
                 check_interval,
             ],
@@ -428,6 +459,154 @@ async def get_telegram_config(license_id: int) -> Optional[dict]:
             config["bot_token_masked"] = token[:10] + "..." + token[-5:]
             config.pop("bot_token", None)
         return config
+
+
+# ============ Telegram Phone Sessions Functions ============
+
+async def save_telegram_phone_session(
+    license_id: int,
+    phone_number: str,
+    session_string: str,
+    user_id: str = None,
+    user_first_name: str = None,
+    user_last_name: str = None,
+    user_username: str = None
+) -> int:
+    """Save or update Telegram phone session (MTProto)."""
+    # Encrypt session data
+    encrypted_session = simple_encrypt(session_string)
+    
+    async with get_db() as db:
+        # Check if session exists
+        existing = await fetch_one(
+            db,
+            "SELECT id FROM telegram_phone_sessions WHERE license_key_id = ?",
+            [license_id],
+        )
+        
+        from db_helper import DB_TYPE
+        now = datetime.now() if DB_TYPE == "postgresql" else datetime.now().isoformat()
+        
+        if existing:
+            await execute_sql(
+                db,
+                """
+                UPDATE telegram_phone_sessions SET
+                    phone_number = ?,
+                    session_data_encrypted = ?,
+                    user_id = ?,
+                    user_first_name = ?,
+                    user_last_name = ?,
+                    user_username = ?,
+                    is_active = TRUE,
+                    updated_at = ?
+                WHERE license_key_id = ?
+                """,
+                [
+                    phone_number,
+                    encrypted_session,
+                    user_id,
+                    user_first_name,
+                    user_last_name,
+                    user_username,
+                    now,
+                    license_id,
+                ],
+            )
+            await commit_db(db)
+            return existing["id"]
+        
+        await execute_sql(
+            db,
+            """
+            INSERT INTO telegram_phone_sessions 
+                (license_key_id, phone_number, session_data_encrypted,
+                 user_id, user_first_name, user_last_name, user_username, is_active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, ?, ?)
+            """,
+            [
+                license_id,
+                phone_number,
+                encrypted_session,
+                user_id,
+                user_first_name,
+                user_last_name,
+                user_username,
+                now,
+                now,
+            ],
+        )
+        row = await fetch_one(
+            db,
+            """
+            SELECT id FROM telegram_phone_sessions
+            WHERE license_key_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [license_id],
+        )
+        await commit_db(db)
+        return row["id"] if row else 0
+
+
+async def get_telegram_phone_session(license_id: int) -> Optional[dict]:
+    """Get Telegram phone session for a license (without decrypted session data)."""
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
+            "SELECT * FROM telegram_phone_sessions WHERE license_key_id = ? AND is_active = TRUE",
+            [license_id],
+        )
+        if row:
+            # Don't return encrypted session data
+            row.pop("session_data_encrypted", None)
+            # Mask phone number for display
+            if row.get("phone_number"):
+                phone = row["phone_number"]
+                if len(phone) > 6:
+                    row["phone_number_masked"] = phone[:3] + "***" + phone[-3:]
+        return row
+
+
+async def get_telegram_phone_session_data(license_id: int) -> Optional[str]:
+    """Get decrypted Telegram phone session string (internal use only)."""
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
+            "SELECT session_data_encrypted FROM telegram_phone_sessions WHERE license_key_id = ? AND is_active = TRUE",
+            [license_id],
+        )
+        if row and row.get("session_data_encrypted"):
+            return simple_decrypt(row["session_data_encrypted"])
+    return None
+
+
+async def deactivate_telegram_phone_session(license_id: int) -> bool:
+    """Deactivate Telegram phone session."""
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            "UPDATE telegram_phone_sessions SET is_active = FALSE WHERE license_key_id = ?",
+            [license_id],
+        )
+        await commit_db(db)
+        return True
+
+
+async def update_telegram_phone_session_sync_time(license_id: int) -> bool:
+    """Update last_synced_at timestamp."""
+    from db_helper import DB_TYPE
+    now = datetime.now() if DB_TYPE == "postgresql" else datetime.now().isoformat()
+    
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            "UPDATE telegram_phone_sessions SET last_synced_at = ? WHERE license_key_id = ?",
+            [now, license_id],
+        )
+        await commit_db(db)
+        return True
 
 
 async def get_whatsapp_config(license_id: int) -> Optional[dict]:

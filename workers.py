@@ -36,6 +36,7 @@ from services.telegram_service import TelegramService
 from services.whatsapp_service import WhatsAppService
 from services.gmail_oauth_service import GmailOAuthService
 from services.gmail_api_service import GmailAPIService
+from services.telegram_phone_service import TelegramPhoneService
 
 # Import models
 from models import (
@@ -47,7 +48,9 @@ from models import (
     get_inbox_messages,
     create_outbox_message,
     approve_outbox_message,
-    mark_outbox_sent
+    mark_outbox_sent,
+    get_telegram_phone_session_data,
+    update_telegram_phone_session_sync_time,
 )
 from agent import process_message
 from message_filters import apply_filters
@@ -135,10 +138,19 @@ class MessagePoller:
                         rows = await cursor.fetchall()
                         licenses.extend([row[0] for row in rows])
                     
-                    # Get licenses with telegram configs
+                    # Get licenses with telegram bot configs
                     async with db.execute("""
                         SELECT DISTINCT license_key_id 
                         FROM telegram_configs 
+                        WHERE is_active = 1
+                    """) as cursor:
+                        rows = await cursor.fetchall()
+                        licenses.extend([row[0] for row in rows])
+                    
+                    # Get licenses with telegram phone sessions
+                    async with db.execute("""
+                        SELECT DISTINCT license_key_id 
+                        FROM telegram_phone_sessions 
                         WHERE is_active = 1
                     """) as cursor:
                         rows = await cursor.fetchall()
@@ -241,10 +253,82 @@ class MessagePoller:
             logger.error(f"Error polling email for license {license_id}: {e}", exc_info=True)
     
     async def _poll_telegram(self, license_id: int):
-        """Poll Telegram for new messages (if using polling instead of webhook)"""
-        # Telegram primarily uses webhooks, but we can implement polling as fallback
-        # For now, this is a placeholder - webhooks are preferred
-        pass
+        """Poll Telegram for new messages for phone-number sessions (MTProto)."""
+        try:
+            # Get Telegram phone session string (if any)
+            session_string = await get_telegram_phone_session_data(license_id)
+            if not session_string:
+                # No phone session configured for this license
+                return
+
+            phone_service = TelegramPhoneService()
+
+            # Fetch recent messages from Telegram phone account
+            messages = await phone_service.get_recent_messages(
+                session_string=session_string,
+                since_hours=24,
+                limit=50,
+            )
+
+            if not messages:
+                return
+
+            # Get recent inbox messages for duplicate detection
+            recent_messages = await get_inbox_messages(license_id, limit=50)
+
+            for msg in messages:
+                # Check if we already have this message
+                existing = await self._check_existing_message(
+                    license_id, "telegram", msg.get("channel_message_id")
+                )
+                if existing:
+                    continue
+
+                # Apply filters
+                message_dict = {
+                    "body": msg["body"],
+                    "sender_contact": msg.get("sender_contact"),
+                    "sender_name": msg.get("sender_name"),
+                    "subject": msg.get("subject"),
+                    "channel": "telegram",
+                }
+
+                should_process, filter_reason = await apply_filters(
+                    message_dict, license_id, recent_messages
+                )
+
+                if not should_process:
+                    logger.info(f"Telegram phone message filtered: {filter_reason}")
+                    continue
+
+                # Save to inbox as Telegram channel
+                msg_id = await save_inbox_message(
+                    license_id=license_id,
+                    channel="telegram",
+                    body=msg["body"],
+                    sender_name=msg.get("sender_name"),
+                    sender_contact=msg.get("sender_contact"),
+                    sender_id=msg.get("sender_id"),
+                    subject=msg.get("subject"),
+                    channel_message_id=msg.get("channel_message_id"),
+                    received_at=msg.get("received_at"),
+                )
+
+                # Analyze with AI (auto-reply disabled by default for phone sessions)
+                await self._analyze_and_process_message(
+                    msg_id,
+                    msg["body"],
+                    license_id,
+                    False,  # auto_reply for Telegram phone can be added later
+                    "telegram",
+                    msg.get("sender_contact"),
+                )
+
+            # Update last sync time
+            await update_telegram_phone_session_sync_time(license_id)
+
+        except Exception as e:
+            logger.error(f"Error polling Telegram phone for license {license_id}: {e}", exc_info=True)
     
     async def _check_existing_message(self, license_id: int, channel: str, channel_message_id: Optional[str]) -> bool:
         """Check if a message already exists in inbox"""
@@ -252,13 +336,14 @@ class MessagePoller:
             return False
         
         try:
-            async with aiosqlite.connect(DATABASE_PATH) as db:
-                async with db.execute("""
-                    SELECT id FROM inbox_messages 
-                    WHERE license_key_id = ? AND channel = ? AND channel_message_id = ?
-                """, (license_id, channel, channel_message_id)) as cursor:
-                    row = await cursor.fetchone()
-                    return row is not None
+            from db_helper import get_db, fetch_one
+            async with get_db() as db:
+                row = await fetch_one(
+                    db,
+                    "SELECT id FROM inbox_messages WHERE license_key_id = ? AND channel = ? AND channel_message_id = ?",
+                    [license_id, channel, channel_message_id]
+                )
+                return row is not None
         except Exception as e:
             logger.error(f"Error checking existing message: {e}")
             return False

@@ -15,6 +15,11 @@ from models import (
     update_email_config_settings,
     save_telegram_config,
     get_telegram_config,
+    save_telegram_phone_session,
+    get_telegram_phone_session,
+    get_telegram_phone_session_data,
+    deactivate_telegram_phone_session,
+    update_telegram_phone_session_sync_time,
     save_inbox_message,
     update_inbox_analysis,
     get_inbox_messages,
@@ -25,7 +30,7 @@ from models import (
     get_pending_outbox,
     init_enhanced_tables,
 )
-from services import EmailService, EMAIL_PROVIDERS, TelegramService, TELEGRAM_SETUP_GUIDE, GmailOAuthService, GmailAPIService
+from services import EmailService, EMAIL_PROVIDERS, TelegramService, TELEGRAM_SETUP_GUIDE, GmailOAuthService, GmailAPIService, TelegramPhoneService
 from models import get_email_oauth_tokens
 from agent import process_message
 from workers import get_worker_status
@@ -47,6 +52,16 @@ class EmailConfigRequest(BaseModel):
 class TelegramConfigRequest(BaseModel):
     bot_token: str
     auto_reply_enabled: bool = False
+
+
+class TelegramPhoneStartRequest(BaseModel):
+    phone_number: str
+
+
+class TelegramPhoneVerifyRequest(BaseModel):
+    phone_number: str
+    code: str
+    session_id: Optional[str] = None
 
 
 class ApprovalRequest(BaseModel):
@@ -396,6 +411,112 @@ async def telegram_webhook(
     )
     
     return {"ok": True}
+
+
+# ============ Telegram Phone Routes (MTProto) ============
+
+@router.post("/telegram-phone/start")
+async def start_telegram_phone_login(
+    request: TelegramPhoneStartRequest,
+    license: dict = Depends(get_license_from_header)
+):
+    """Start Telegram phone number login - sends verification code"""
+    try:
+        phone_service = TelegramPhoneService()
+        result = await phone_service.start_login(request.phone_number)
+        
+        return {
+            "success": True,
+            "message": result["message"],
+            "session_id": result.get("session_id"),
+            "phone_number": result["phone_number"]
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"خطأ في طلب الكود: {str(e)}")
+
+
+@router.post("/telegram-phone/verify")
+async def verify_telegram_phone_code(
+    request: TelegramPhoneVerifyRequest,
+    license: dict = Depends(get_license_from_header)
+):
+    """Verify Telegram code and complete login"""
+    try:
+        phone_service = TelegramPhoneService()
+        session_string, user_info = await phone_service.verify_code(
+            phone_number=request.phone_number,
+            code=request.code,
+            session_id=request.session_id
+        )
+        
+        # Save session to database
+        config_id = await save_telegram_phone_session(
+            license_id=license["license_id"],
+            phone_number=request.phone_number,
+            session_string=session_string,
+            user_id=str(user_info.get("id")),
+            user_first_name=user_info.get("first_name"),
+            user_last_name=user_info.get("last_name"),
+            user_username=user_info.get("username")
+        )
+        
+        return {
+            "success": True,
+            "message": "تم ربط رقم Telegram بنجاح",
+            "user": {
+                "id": user_info.get("id"),
+                "phone": user_info.get("phone"),
+                "first_name": user_info.get("first_name"),
+                "last_name": user_info.get("last_name"),
+                "username": user_info.get("username")
+            },
+            "config_id": config_id
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"خطأ في التحقق: {str(e)}")
+
+
+@router.get("/telegram-phone/config")
+async def get_telegram_phone_config(license: dict = Depends(get_license_from_header)):
+    """Get current Telegram phone session configuration"""
+    config = await get_telegram_phone_session(license["license_id"])
+    return {"config": config}
+
+
+@router.post("/telegram-phone/test")
+async def test_telegram_phone_connection(license: dict = Depends(get_license_from_header)):
+    """Test Telegram phone session connection"""
+    try:
+        session_string = await get_telegram_phone_session_data(license["license_id"])
+        if not session_string:
+            raise HTTPException(status_code=404, detail="لا توجد جلسة Telegram نشطة")
+        
+        phone_service = TelegramPhoneService()
+        success, message, user_info = await phone_service.test_connection(session_string)
+        
+        return {
+            "success": success,
+            "message": message,
+            "user": user_info if success else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"خطأ في الاختبار: {str(e)}")
+
+
+@router.post("/telegram-phone/disconnect")
+async def disconnect_telegram_phone(license: dict = Depends(get_license_from_header)):
+    """Disconnect Telegram phone session"""
+    await deactivate_telegram_phone_session(license["license_id"])
+    return {
+        "success": True,
+        "message": "تم قطع الاتصال بنجاح"
+    }
 
 
 # ============ Inbox Routes ============
