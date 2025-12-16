@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 import asyncio
 import re
+import socket
+import errno
 
 
 class EmailService:
@@ -33,6 +35,76 @@ class EmailService:
         self.smtp_server = smtp_server
         self.imap_port = imap_port
         self.smtp_port = smtp_port
+    
+    def _format_error_message(self, error: Exception, protocol: str) -> str:
+        """Format error messages to be more user-friendly"""
+        error_str = ""
+        
+        # Handle IMAP error responses which can be bytes in exception args
+        if hasattr(error, 'args') and error.args:
+            for arg in error.args:
+                if isinstance(arg, bytes):
+                    try:
+                        decoded = arg.decode('utf-8', errors='replace')
+                        if decoded:
+                            error_str = decoded
+                            break
+                    except:
+                        pass
+                elif isinstance(arg, str):
+                    error_str = arg
+                    break
+        
+        # Fallback to string representation
+        if not error_str:
+            error_str = str(error)
+        
+        # Remove bytes prefix if present (from string representation)
+        if error_str.startswith("b'") and error_str.endswith("'"):
+            error_str = error_str[2:-1].replace("\\n", " ").replace("\\r", "")
+        elif error_str.startswith('b"') and error_str.endswith('"'):
+            error_str = error_str[2:-1].replace("\\n", " ").replace("\\r", "")
+        
+        # Check for specific error patterns and provide helpful messages
+        error_lower = error_str.lower()
+        
+        # Gmail app password required (check for common indicators)
+        if any(keyword in error_lower for keyword in ['application-specific', 'app password', 'password required', 'less secure']):
+            if 'gmail' in self.imap_server.lower() or 'google' in self.imap_server.lower() or 'google' in error_lower:
+                return f"{protocol}: يتطلب كلمة مرور التطبيق (App Password). يرجى إنشاء كلمة مرور التطبيق من إعدادات Google: https://support.google.com/accounts/answer/185833"
+            else:
+                return f"{protocol}: يتطلب كلمة مرور التطبيق. يرجى التحقق من إعدادات حساب البريد."
+        
+        # Authentication failed
+        if any(keyword in error_lower for keyword in ['authentication failed', 'invalid credentials', 'login failed', 'bad credentials']):
+            return f"{protocol}: فشل تسجيل الدخول. يرجى التحقق من البريد الإلكتروني وكلمة المرور."
+        
+        # Network unreachable
+        if any(keyword in error_lower for keyword in ['network is unreachable', 'errno 101', 'connection refused', 'errno 111', 'connection error']):
+            return f"{protocol}: لا يمكن الوصول إلى الخادم. تحقق من الاتصال بالإنترنت وإعدادات الخادم ({self.smtp_server if protocol == 'SMTP' else self.imap_server})."
+        
+        # Connection timeout
+        if any(keyword in error_lower for keyword in ['timed out', 'timeout', 'connection timeout']):
+            return f"{protocol}: انتهت مهلة الاتصال. تحقق من صحة عنوان الخادم والمنفذ."
+        
+        # SSL/TLS errors
+        if any(keyword in error_lower for keyword in ['ssl', 'certificate', 'tls', 'sslerror']):
+            return f"{protocol}: خطأ في الاتصال الآمن. تحقق من إعدادات SSL/TLS."
+        
+        # Clean up common IMAP response prefixes and extra whitespace
+        error_str = re.sub(r'\[.*?\]\s*', '', error_str)
+        error_str = re.sub(r'\s+', ' ', error_str)
+        error_str = error_str.strip()
+        
+        # Limit error message length
+        if len(error_str) > 200:
+            error_str = error_str[:200] + "..."
+        
+        # Return formatted error
+        if error_str:
+            return f"{protocol}: {error_str}"
+        else:
+            return f"{protocol}: خطأ غير معروف في الاتصال"
     
     def _decode_header_value(self, value: str) -> str:
         """Decode email header value (handles Arabic and other encodings)"""
@@ -249,13 +321,20 @@ class EmailService:
                     mail.login(self.email_address, self.password)
                     mail.logout()
                     mail = None
+                except (imaplib.IMAP4.error, imaplib.IMAP4.abort) as e:
+                    if mail:
+                        try:
+                            mail.logout()
+                        except:
+                            pass
+                    errors.append(self._format_error_message(e, "IMAP"))
                 except Exception as e:
                     if mail:
                         try:
                             mail.logout()
                         except:
                             pass
-                    errors.append(f"IMAP: {str(e)}")
+                    errors.append(self._format_error_message(e, "IMAP"))
                 
                 # Test SMTP with timeout
                 try:
@@ -273,7 +352,7 @@ class EmailService:
                             server.quit()
                         except:
                             pass
-                    errors.append(f"SMTP: {str(e)}")
+                    errors.append(self._format_error_message(e, "SMTP"))
                 
             except Exception as e:
                 # Cleanup on any unexpected error
