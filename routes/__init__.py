@@ -1,6 +1,6 @@
 """Al-Mudeer Routes Package"""
 
-from .integrations import router as integrations_router
+from .core_integrations import router as integrations_router
 from .features import router as features_router
 from .whatsapp import router as whatsapp_router
 from .team import router as team_router
