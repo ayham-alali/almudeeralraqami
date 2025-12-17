@@ -181,8 +181,20 @@ class MessagePoller:
             check_interval = config.get("check_interval_minutes", 5)
             
             if last_checked:
-                last_checked_dt = datetime.fromisoformat(last_checked)
-                if datetime.now() - last_checked_dt < timedelta(minutes=check_interval):
+                # Support both string (SQLite) and datetime (PostgreSQL) values
+                if isinstance(last_checked, str):
+                    try:
+                        last_checked_dt = datetime.fromisoformat(last_checked.replace("Z", "+00:00"))
+                    except ValueError:
+                        # Fallback: try parsing generic string representation
+                        last_checked_dt = datetime.fromisoformat(str(last_checked))
+                elif hasattr(last_checked, "isoformat"):
+                    # Already a datetime-like object
+                    last_checked_dt = last_checked
+                else:
+                    last_checked_dt = datetime.fromisoformat(str(last_checked))
+
+                if datetime.utcnow() - last_checked_dt < timedelta(minutes=check_interval):
                     return  # Too soon to check again
             
             # Get OAuth tokens

@@ -12,25 +12,15 @@ from dataclasses import dataclass
 from enum import Enum
 import httpx
 
-# Database configuration
-DB_TYPE = os.getenv("DB_TYPE", "sqlite").lower()
-DATABASE_PATH = os.getenv("DATABASE_PATH", "almudeer.db")
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-# Import appropriate database driver
-if DB_TYPE == "postgresql":
-    try:
-        import asyncpg
-        POSTGRES_AVAILABLE = True
-        aiosqlite = None
-    except ImportError:
-        raise ImportError(
-            "PostgreSQL selected but asyncpg not installed. "
-            "Install with: pip install asyncpg"
-        )
-else:
-    import aiosqlite
-    POSTGRES_AVAILABLE = False
+# Unified DB helper (works for both SQLite and PostgreSQL)
+from db_helper import (
+    get_db,
+    execute_sql,
+    fetch_one,
+    fetch_all,
+    commit_db,
+    DB_TYPE,
+)
 
 # Webhook URLs from environment
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL", "")
@@ -73,108 +63,64 @@ class NotificationPayload:
 
 
 async def init_notification_tables():
-    """Initialize notification-related tables"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        if not DATABASE_URL:
-            raise ValueError("DATABASE_URL is required for PostgreSQL")
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            # Notification rules table
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS notification_rules (
-                    id SERIAL PRIMARY KEY,
-                    license_key_id INTEGER NOT NULL,
-                    name VARCHAR(255) NOT NULL,
-                    condition_type VARCHAR(255) NOT NULL,
-                    condition_value TEXT NOT NULL,
-                    channels TEXT NOT NULL,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
-                )
-            """)
-            
-            # External integrations (Slack, Discord)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS notification_integrations (
-                    id SERIAL PRIMARY KEY,
-                    license_key_id INTEGER NOT NULL,
-                    channel_type VARCHAR(255) NOT NULL,
-                    webhook_url TEXT NOT NULL,
-                    channel_name VARCHAR(255),
-                    is_active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    FOREIGN KEY (license_key_id) REFERENCES license_keys(id),
-                    UNIQUE(license_key_id, channel_type)
-                )
-            """)
-            
-            # Notification log
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS notification_log (
-                    id SERIAL PRIMARY KEY,
-                    license_key_id INTEGER NOT NULL,
-                    channel VARCHAR(255) NOT NULL,
-                    priority VARCHAR(255) NOT NULL,
-                    title TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    status VARCHAR(255) DEFAULT 'sent',
-                    error_message TEXT,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
-                )
-            """)
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            # Notification rules table
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS notification_rules (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    license_key_id INTEGER NOT NULL,
-                    name TEXT NOT NULL,
-                    condition_type TEXT NOT NULL,
-                    condition_value TEXT NOT NULL,
-                    channels TEXT NOT NULL,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
-                )
-            """)
-            
-            # External integrations (Slack, Discord)
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS notification_integrations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    license_key_id INTEGER NOT NULL,
-                    channel_type TEXT NOT NULL,
-                    webhook_url TEXT NOT NULL,
-                    channel_name TEXT,
-                    is_active BOOLEAN DEFAULT TRUE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (license_key_id) REFERENCES license_keys(id),
-                    UNIQUE(license_key_id, channel_type)
-                )
-            """)
-            
-            # Notification log
-            await db.execute("""
-                CREATE TABLE IF NOT EXISTS notification_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    license_key_id INTEGER NOT NULL,
-                    channel TEXT NOT NULL,
-                    priority TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    message TEXT NOT NULL,
-                    status TEXT DEFAULT 'sent',
-                    error_message TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
-                )
-            """)
-            
-            await db.commit()
+    """Initialize notification-related tables (DB agnostic via db_helper)."""
+    async with get_db() as db:
+        # Notification rules table
+        await execute_sql(
+            db,
+            """
+            CREATE TABLE IF NOT EXISTS notification_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                condition_type TEXT NOT NULL,
+                condition_value TEXT NOT NULL,
+                channels TEXT NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
+            )
+            """,
+        )
+
+        # External integrations (Slack, Discord, generic webhooks)
+        await execute_sql(
+            db,
+            """
+            CREATE TABLE IF NOT EXISTS notification_integrations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key_id INTEGER NOT NULL,
+                channel_type TEXT NOT NULL,
+                webhook_url TEXT NOT NULL,
+                channel_name TEXT,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (license_key_id) REFERENCES license_keys(id),
+                UNIQUE(license_key_id, channel_type)
+            )
+            """,
+        )
+
+        # Notification log
+        await execute_sql(
+            db,
+            """
+            CREATE TABLE IF NOT EXISTS notification_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key_id INTEGER NOT NULL,
+                channel TEXT NOT NULL,
+                priority TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                status TEXT DEFAULT 'sent',
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
+            )
+            """,
+        )
+
+        await commit_db(db)
     print("OK Notification tables initialized")
 
 
@@ -186,110 +132,84 @@ async def save_integration(
     webhook_url: str,
     channel_name: str = None
 ) -> int:
-    """Save or update notification integration"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        if not DATABASE_URL:
-            raise ValueError("DATABASE_URL is required for PostgreSQL")
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            row = await conn.fetchrow("""
-                INSERT INTO notification_integrations 
-                (license_key_id, channel_type, webhook_url, channel_name)
-                VALUES ($1, $2, $3, $4)
-                ON CONFLICT(license_key_id, channel_type) 
-                DO UPDATE SET webhook_url = $3, channel_name = $4, is_active = TRUE
-                RETURNING id
-            """, license_id, channel_type, webhook_url, channel_name)
-            return row['id']
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            cursor = await db.execute("""
-                INSERT INTO notification_integrations 
-                (license_key_id, channel_type, webhook_url, channel_name)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(license_key_id, channel_type) 
-                DO UPDATE SET webhook_url = ?, channel_name = ?, is_active = TRUE
-            """, (license_id, channel_type, webhook_url, channel_name, webhook_url, channel_name))
-            await db.commit()
-            return cursor.lastrowid
+    """Save or update notification integration (DB agnostic)."""
+    async with get_db() as db:
+        # Use INSERT OR REPLACE-style logic via ON CONFLICT emulation
+        await execute_sql(
+            db,
+            """
+            INSERT INTO notification_integrations 
+                (license_key_id, channel_type, webhook_url, channel_name, is_active)
+            VALUES (?, ?, ?, ?, TRUE)
+            ON CONFLICT(license_key_id, channel_type) 
+            DO UPDATE SET webhook_url = ?, channel_name = ?, is_active = TRUE
+            """,
+            [
+                license_id,
+                channel_type,
+                webhook_url,
+                channel_name,
+                webhook_url,
+                channel_name,
+            ],
+        )
+
+        row = await fetch_one(
+            db,
+            """
+            SELECT id FROM notification_integrations
+            WHERE license_key_id = ? AND channel_type = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [license_id, channel_type],
+        )
+        await commit_db(db)
+        return row["id"] if row else 0
 
 
 async def get_integration(license_id: int, channel_type: str) -> Optional[dict]:
-    """Get integration config"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        if not DATABASE_URL:
-            raise ValueError("DATABASE_URL is required for PostgreSQL")
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            row = await conn.fetchrow("""
-                SELECT * FROM notification_integrations 
-                WHERE license_key_id = $1 AND channel_type = $2 AND is_active = TRUE
-            """, license_id, channel_type)
-            return dict(row) if row else None
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM notification_integrations 
-                WHERE license_key_id = ? AND channel_type = ? AND is_active = TRUE
-            """, (license_id, channel_type)) as cursor:
-                row = await cursor.fetchone()
-                return dict(row) if row else None
+    """Get integration config (DB agnostic)."""
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
+            """
+            SELECT * FROM notification_integrations 
+            WHERE license_key_id = ? AND channel_type = ? AND is_active = TRUE
+            """,
+            [license_id, channel_type],
+        )
+        return row
 
 
 async def get_all_integrations(license_id: int) -> List[dict]:
-    """Get all integrations for a license"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        if not DATABASE_URL:
-            raise ValueError("DATABASE_URL is required for PostgreSQL")
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            rows = await conn.fetch("""
-                SELECT * FROM notification_integrations 
-                WHERE license_key_id = $1
-            """, license_id)
-            return [dict(row) for row in rows]
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM notification_integrations 
-                WHERE license_key_id = ?
-            """, (license_id,)) as cursor:
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+    """Get all integrations for a license (DB agnostic)."""
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
+            SELECT * FROM notification_integrations 
+            WHERE license_key_id = ?
+            """,
+            [license_id],
+        )
+        return rows
 
 
 async def disable_integration(license_id: int, channel_type: str) -> bool:
-    """Disable an integration"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        if not DATABASE_URL:
-            raise ValueError("DATABASE_URL is required for PostgreSQL")
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            await conn.execute("""
-                UPDATE notification_integrations 
-                SET is_active = FALSE 
-                WHERE license_key_id = $1 AND channel_type = $2
-            """, license_id, channel_type)
-            return True
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            await db.execute("""
-                UPDATE notification_integrations 
-                SET is_active = FALSE 
-                WHERE license_key_id = ? AND channel_type = ?
-            """, (license_id, channel_type))
-            await db.commit()
-            return True
+    """Disable an integration (DB agnostic)."""
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            """
+            UPDATE notification_integrations 
+            SET is_active = FALSE 
+            WHERE license_key_id = ? AND channel_type = ?
+            """,
+            [license_id, channel_type],
+        )
+        await commit_db(db)
+        return True
 
 
 # ============ Notification Rules ============
@@ -301,85 +221,62 @@ async def create_rule(
     condition_value: str,
     channels: List[str]
 ) -> int:
-    """Create a notification rule"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        if not DATABASE_URL:
-            raise ValueError("DATABASE_URL is required for PostgreSQL")
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            row = await conn.fetchrow("""
-                INSERT INTO notification_rules 
+    """Create a notification rule (DB agnostic)."""
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            """
+            INSERT INTO notification_rules 
                 (license_key_id, name, condition_type, condition_value, channels)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING id
-            """, license_id, name, condition_type, condition_value, json.dumps(channels))
-            return row['id']
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            cursor = await db.execute("""
-                INSERT INTO notification_rules 
-                (license_key_id, name, condition_type, condition_value, channels)
-                VALUES (?, ?, ?, ?, ?)
-            """, (license_id, name, condition_type, condition_value, json.dumps(channels)))
-            await db.commit()
-            return cursor.lastrowid
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [license_id, name, condition_type, condition_value, json.dumps(channels)],
+        )
+
+        row = await fetch_one(
+            db,
+            """
+            SELECT id FROM notification_rules
+            WHERE license_key_id = ? AND name = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [license_id, name],
+        )
+        await commit_db(db)
+        return row["id"] if row else 0
 
 
 async def get_rules(license_id: int) -> List[dict]:
-    """Get all notification rules"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        if not DATABASE_URL:
-            raise ValueError("DATABASE_URL is required for PostgreSQL")
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            rows = await conn.fetch("""
-                SELECT * FROM notification_rules 
-                WHERE license_key_id = $1 AND is_active = TRUE
-            """, license_id)
-            return [
-                {**dict(row), "channels": json.loads(row["channels"])}
-                for row in rows
-            ]
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            db.row_factory = aiosqlite.Row
-            async with db.execute("""
-                SELECT * FROM notification_rules 
-                WHERE license_key_id = ? AND is_active = TRUE
-            """, (license_id,)) as cursor:
-                rows = await cursor.fetchall()
-                return [
-                    {**dict(row), "channels": json.loads(row["channels"])}
-                    for row in rows
-                ]
+    """Get all notification rules (DB agnostic)."""
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
+            SELECT * FROM notification_rules 
+            WHERE license_key_id = ? AND is_active = TRUE
+            """,
+            [license_id],
+        )
+        return [
+            {**row, "channels": json.loads(row["channels"])}
+            for row in rows
+        ]
 
 
 async def delete_rule(license_id: int, rule_id: int) -> bool:
-    """Delete a notification rule"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        if not DATABASE_URL:
-            raise ValueError("DATABASE_URL is required for PostgreSQL")
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            await conn.execute("""
-                DELETE FROM notification_rules 
-                WHERE id = $1 AND license_key_id = $2
-            """, rule_id, license_id)
-            return True
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            await db.execute("""
-                DELETE FROM notification_rules 
-                WHERE id = ? AND license_key_id = ?
-            """, (rule_id, license_id))
-            await db.commit()
-            return True
+    """Delete a notification rule (DB agnostic)."""
+    async with get_db() as db:
+        await execute_sql(
+            db,
+            """
+            DELETE FROM notification_rules 
+            WHERE id = ? AND license_key_id = ?
+            """,
+            [rule_id, license_id],
+        )
+        await commit_db(db)
+        return True
 
 
 # ============ Slack Integration ============
@@ -672,45 +569,27 @@ async def log_notification(
     payload: NotificationPayload,
     results: dict
 ):
-    """Log notification to database"""
-    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
-        if not DATABASE_URL:
-            raise ValueError("DATABASE_URL is required for PostgreSQL")
-        conn = await asyncpg.connect(DATABASE_URL)
-        try:
-            for channel, result in results.items():
-                await conn.execute("""
-                    INSERT INTO notification_log 
+    """Log notification to database (DB agnostic)."""
+    async with get_db() as db:
+        for channel, result in results.items():
+            await execute_sql(
+                db,
+                """
+                INSERT INTO notification_log 
                     (license_key_id, channel, priority, title, message, status, error_message)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                """, (
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
                     license_id,
                     channel,
                     payload.priority.value,
                     payload.title,
                     payload.message,
                     "sent" if result.get("success") else "failed",
-                    result.get("error")
-                ))
-        finally:
-            await conn.close()
-    else:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            for channel, result in results.items():
-                await db.execute("""
-                    INSERT INTO notification_log 
-                    (license_key_id, channel, priority, title, message, status, error_message)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    license_id,
-                    channel,
-                    payload.priority.value,
-                    payload.title,
-                    payload.message,
-                    "sent" if result.get("success") else "failed",
-                    result.get("error")
-                ))
-            await db.commit()
+                    result.get("error"),
+                ],
+            )
+        await commit_db(db)
 
 
 # ============ Smart Notification Triggers ============
