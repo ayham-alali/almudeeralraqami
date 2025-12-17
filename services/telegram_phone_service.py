@@ -48,50 +48,6 @@ class TelegramPhoneService:
         # so that any worker process can handle the verification step.
         self._pending_logins: Dict[str, Dict] = {}
 
-    def _get_session_path(self, phone_number: str) -> str:
-        """Get deterministic session file path for a phone number."""
-        safe_phone = phone_number.replace("+", "").replace(" ", "")
-        tmp_dir = tempfile.gettempdir()
-        return os.path.join(tmp_dir, f"almudeer_tg_phone_{safe_phone}.session")
-    
-    def _get_meta_path(self, phone_number: str) -> str:
-        """Get path for storing temporary metadata (e.g. phone_code_hash)."""
-        return self._get_session_path(phone_number) + ".json"
-    
-    def _cleanup_expired_logins(self, max_age_minutes: int = 10):
-        """Clean up expired login sessions (older than max_age_minutes)"""
-        from datetime import timedelta
-        now = datetime.now()
-        expired_ids = []
-        
-        for session_id, data in self._pending_logins.items():
-            created_at = data.get("created_at")
-            if created_at:
-                age = now - created_at
-                if age > timedelta(minutes=max_age_minutes):
-                    expired_ids.append(session_id)
-                    # Cleanup client if exists
-                    if "client" in data:
-                        client = data["client"]
-                        try:
-                            # Schedule disconnect (can't await in sync method)
-                            import asyncio
-                            if client.is_connected():
-                                asyncio.create_task(client.disconnect())
-                        except:
-                            pass
-                    # Cleanup session file
-                    session_path = data.get("session_path")
-                    if session_path and os.path.exists(session_path):
-                        try:
-                            os.unlink(session_path)
-                        except:
-                            pass
-        
-        # Remove expired entries
-        for session_id in expired_ids:
-            self._pending_logins.pop(session_id, None)
-    
     async def start_login(self, phone_number: str) -> Dict[str, str]:
         """
         Start login process by requesting verification code
@@ -104,118 +60,60 @@ class TelegramPhoneService:
         """
         if not phone_number.startswith('+'):
             phone_number = '+' + phone_number
-        
-        # Use deterministic session + meta files per phone so any worker can verify
-        session_path = self._get_session_path(phone_number)
-        meta_path = self._get_meta_path(phone_number)
-        
-        # Remove any old files for this phone
-        for path in (session_path, meta_path):
-            if os.path.exists(path):
-                try:
-                    os.unlink(path)
-                except Exception:
-                    pass
-        
+
+        # Clean up any previous pending login for this phone
+        pending = self._pending_logins.pop(phone_number, None)
+        if pending and "client" in pending:
+            try:
+                await pending["client"].disconnect()
+            except Exception:
+                pass
+
+        # Use an in-memory StringSession so we don't rely on temp files
+        session = StringSession()
+        client = TelegramClient(session, int(self.api_id), self.api_hash)
+
         try:
-            client = TelegramClient(session_path, int(self.api_id), self.api_hash)
             await client.connect()
-            
-            if not await client.is_user_authorized():
-                # Request code and capture phone_code_hash
-                sent = await client.send_code_request(phone_number)
-                
-                # Persist phone_code_hash so that any worker can verify later (best-effort)
-                phone_code_hash = getattr(sent, "phone_code_hash", None)
-                try:
-                    with open(meta_path, "w", encoding="utf-8") as f:
-                        json.dump(
-                            {
-                                "phone_number": phone_number,
-                                "phone_code_hash": phone_code_hash,
-                                "created_at": datetime.now().isoformat(),
-                            },
-                            f,
-                            ensure_ascii=False,
-                        )
-                except Exception:
-                    pass
 
-                # Also keep client in memory so that the same process can verify
-                # without needing to reconstruct session state.
-                self._pending_logins[phone_number] = {
-                    "phone_number": phone_number,
-                    "session_path": session_path,
-                    "created_at": datetime.now(),
-                    "client": client,
-                    "phone_code_hash": phone_code_hash,
-                }
+            # Always request a new code
+            sent = await client.send_code_request(phone_number)
+            phone_code_hash = getattr(sent, "phone_code_hash", None)
 
-                return {
-                    "success": True,
-                    "message": f"تم إرسال كود التحقق إلى Telegram الخاص برقم {phone_number}",
-                    # Keep the same field name for backward compatibility; we now
-                    # store the deterministic session_path in it (unused by backend).
-                    "session_id": session_path,
-                    "phone_number": phone_number
-                }
-            else:
-                # Already authorized, convert file session to string
-                client.session.save()
-                
-                # Convert file session to StringSession format
-                me = await client.get_me()
-                string_session = StringSession()
-                string_session.set_dc(
-                    client.session.dc_id,
-                    client.session.server_address,
-                    client.session.port
-                )
-                if hasattr(client.session, '_auth_key') and client.session._auth_key:
-                    string_session._auth_key = client.session._auth_key
-                elif hasattr(client.session, 'auth_key') and client.session.auth_key:
-                    string_session.auth_key = client.session.auth_key
-                
-                session_string = string_session.save()
-                
-                await client.disconnect()
-                
-                return {
-                    "success": True,
-                    "message": "تم تسجيل الدخول مسبقاً",
-                    "session_string": session_string,
-                    "phone_number": phone_number
-                }
-        
+            # Store pending login info in memory
+            self._pending_logins[phone_number] = {
+                "phone_number": phone_number,
+                "created_at": datetime.now(),
+                "client": client,
+                "phone_code_hash": phone_code_hash,
+            }
+
+            return {
+                "success": True,
+                "message": f"تم إرسال كود التحقق إلى Telegram الخاص برقم {phone_number}",
+                "session_id": None,
+                "phone_number": phone_number,
+            }
+
         except PhoneNumberUnoccupiedError:
-            if 'client' in locals():
+            try:
                 await client.disconnect()
-            # Clean up deterministic session file if it exists
-            if os.path.exists(session_path):
-                try:
-                    os.unlink(session_path)
-                except Exception:
-                    pass
+            except Exception:
+                pass
             raise ValueError(f"الرقم {phone_number} غير مسجل في Telegram")
-        
+
         except FloodWaitError as e:
-            if 'client' in locals():
+            try:
                 await client.disconnect()
-            if os.path.exists(session_path):
-                try:
-                    os.unlink(session_path)
-                except Exception:
-                    pass
+            except Exception:
+                pass
             raise ValueError(f"تم إرسال عدد كبير من الطلبات. يرجى الانتظار {e.seconds} ثانية")
-        
+
         except Exception as e:
-            if 'client' in locals():
+            try:
                 await client.disconnect()
-            if os.path.exists(session_path):
-                try:
-                    os.unlink(session_path)
-                except Exception:
-                    pass
+            except Exception:
+                pass
             raise ValueError(f"خطأ في طلب الكود: {str(e)}")
     
     async def verify_code(
@@ -238,173 +136,71 @@ class TelegramPhoneService:
         """
         if not phone_number.startswith('+'):
             phone_number = '+' + phone_number
-        
-        # Prefer in-memory pending login (same process); fall back to session/meta files.
+
         pending = self._pending_logins.get(phone_number)
-        if pending:
-            session_path = pending.get("session_path") or self._get_session_path(phone_number)
-            phone_code_hash = pending.get("phone_code_hash")
-            client: Optional[TelegramClient] = pending.get("client")
-        else:
-            session_path = self._get_session_path(phone_number)
-            meta_path = self._get_meta_path(phone_number)
-            
-            if not os.path.exists(session_path) or not os.path.exists(meta_path):
-                # No active login request found for this phone
-                raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
-            
-            # Load phone_code_hash from meta file
-            try:
-                with open(meta_path, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-                phone_code_hash = meta.get("phone_code_hash")
-                if not phone_code_hash:
-                    raise ValueError("بيانات التحقق غير مكتملة، يرجى طلب كود جديد")
-            except Exception as e:
-                raise ValueError("تعذر قراءة بيانات التحقق، يرجى طلب كود جديد") from e
-            
-            # Open client from session file
-            client = TelegramClient(session_path, int(self.api_id), self.api_hash)
-            await client.connect()
+        if not pending:
+            raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
+
+        client: TelegramClient = pending["client"]
 
         try:
-            if await client.is_user_authorized():
-                # Already authorized, convert file session to string
-                client.session.save()
-                
-                # Convert to StringSession format
-                string_session = StringSession()
-                string_session.set_dc(
-                    client.session.dc_id,
-                    client.session.server_address,
-                    client.session.port
-                )
-                # Copy auth key
-                if hasattr(client.session, '_auth_key') and client.session._auth_key:
-                    string_session._auth_key = client.session._auth_key
-                elif hasattr(client.session, 'auth_key') and client.session.auth_key:
-                    string_session.auth_key = client.session.auth_key
-                
-                session_string = string_session.save()
-                me = await client.get_me()
-                await client.disconnect()
-                
-                # Cleanup
-                if session_id:
-                    self._pending_logins.pop(session_id, None)
-                os.unlink(session_path)
-                
-                return session_string, {
-                    "id": me.id,
-                    "phone": me.phone,
-                    "first_name": me.first_name,
-                    "last_name": me.last_name,
-                    "username": me.username
-                }
-            
-            # Sign in with code (using stored phone_code_hash).
-            # We don't need to pass the phone again because it's already bound in the session.
-            try:
-                await client.sign_in(code=code, phone_code_hash=phone_code_hash)
-            except SessionPasswordNeededError:
-                # 2FA enabled - request password
-                if not password:
-                    # Keep session alive for password entry
-                    # Store client temporarily (don't disconnect yet)
-                    if session_id:
-                        # Update pending login to indicate 2FA needed
-                        self._pending_logins[session_id]["needs_2fa"] = True
-                        self._pending_logins[session_id]["client"] = client
-                    raise ValueError(
-                        "حسابك محمي بكلمة مرور ثنائية (2FA). "
-                        "يرجى إدخال كلمة المرور الثنائية لإكمال تسجيل الدخول."
-                    )
-                else:
-                    # Sign in with password
+            # If we are not yet authorized, complete sign-in
+            if not await client.is_user_authorized():
+                try:
+                    # First step: code verification
+                    await client.sign_in(phone_number, code)
+                except SessionPasswordNeededError:
+                    # 2FA enabled - ask for password on next call
+                    if not password:
+                        raise ValueError(
+                            "حسابك محمي بكلمة مرور ثنائية (2FA). "
+                            "يرجى إدخال كلمة المرور الثنائية لإكمال تسجيل الدخول."
+                        )
+                    # Second step: provide 2FA password
                     try:
                         await client.sign_in(password=password)
                     except Exception as e:
-                        await client.disconnect()
-                        os.unlink(session_path)
-                        if session_id:
-                            self._pending_logins.pop(session_id, None)
                         raise ValueError(f"كلمة المرور الثنائية غير صحيحة: {str(e)}")
-            except PhoneCodeInvalidError:
-                raise ValueError("كود التحقق غير صحيح")
-            except PhoneCodeExpiredError:
-                if session_id:
-                    self._pending_logins.pop(session_id, None)
-                if os.path.exists(session_path):
-                    os.unlink(session_path)
-                raise ValueError("انتهت صلاحية كود التحقق. يرجى طلب كود جديد")
-            
-            # Get session string - convert file session to StringSession format
-            client.session.save()
-            
-            # Convert to StringSession format
-            string_session = StringSession()
-            string_session.set_dc(
-                client.session.dc_id,
-                client.session.server_address,
-                client.session.port
-            )
-            # Copy auth key
-            if hasattr(client.session, '_auth_key') and client.session._auth_key:
-                string_session._auth_key = client.session._auth_key
-            elif hasattr(client.session, 'auth_key') and client.session.auth_key:
-                string_session.auth_key = client.session.auth_key
-            
-            session_string = string_session.save()
+
+            # Now we should be fully authorized
+            session_string = client.session.save()
             me = await client.get_me()
-            
+
             await client.disconnect()
-            
-            # Cleanup
-            if os.path.exists(session_path):
-                try:
-                    os.unlink(session_path)
-                except Exception:
-                    pass
-            meta_path = self._get_meta_path(phone_number)
-            if os.path.exists(meta_path):
-                try:
-                    os.unlink(meta_path)
-                except Exception:
-                    pass
-            # Remove pending in-memory login if exists
+            # Remove pending login
             self._pending_logins.pop(phone_number, None)
-            
+
             return session_string, {
                 "id": me.id,
                 "phone": me.phone,
                 "first_name": me.first_name,
                 "last_name": me.last_name,
-                "username": me.username
+                "username": me.username,
             }
-        
-        except Exception as e:
-            if client:
-                try:
-                    await client.disconnect()
-                except:
-                    pass
-            if os.path.exists(session_path):
-                try:
-                    os.unlink(session_path)
-                except Exception:
-                    pass
-            meta_path = self._get_meta_path(phone_number)
-            if os.path.exists(meta_path):
-                try:
-                    os.unlink(meta_path)
-                except Exception:
-                    pass
-            # Remove pending in-memory login if exists
+
+        except PhoneCodeInvalidError:
+            raise ValueError("كود التحقق غير صحيح")
+        except PhoneCodeExpiredError:
+            # Code expired; user must request a new one
             self._pending_logins.pop(phone_number, None)
-            
+            raise ValueError("انتهت صلاحية كود التحقق. يرجى طلب كود جديد")
+        except Exception as e:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            # Ensure cleanup
+            self._pending_logins.pop(phone_number, None)
+
+            # For known ValueError cases, bubble up as-is
             if isinstance(e, ValueError):
                 raise
-            raise ValueError(f"خطأ في التحقق: {str(e)}")
+
+            # Hide low-level details (like temp file paths) behind a clean message
+            raise ValueError(
+                "حدث خطأ غير متوقع أثناء التحقق من رمز Telegram. "
+                "يرجى طلب كود جديد والمحاولة مرة أخرى."
+            )
     
     async def create_client_from_session(self, session_string: str) -> TelegramClient:
         """
