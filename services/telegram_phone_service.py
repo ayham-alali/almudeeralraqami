@@ -54,6 +54,10 @@ class TelegramPhoneService:
         tmp_dir = tempfile.gettempdir()
         return os.path.join(tmp_dir, f"almudeer_tg_phone_{safe_phone}.session")
     
+    def _get_meta_path(self, phone_number: str) -> str:
+        """Get path for storing temporary metadata (e.g. phone_code_hash)."""
+        return self._get_session_path(phone_number) + ".json"
+    
     def _cleanup_expired_logins(self, max_age_minutes: int = 10):
         """Clean up expired login sessions (older than max_age_minutes)"""
         from datetime import timedelta
@@ -101,31 +105,50 @@ class TelegramPhoneService:
         if not phone_number.startswith('+'):
             phone_number = '+' + phone_number
         
-        # Use deterministic session file per phone so any worker can verify
+        # Use deterministic session + meta files per phone so any worker can verify
         session_path = self._get_session_path(phone_number)
+        meta_path = self._get_meta_path(phone_number)
         
-        # Remove any old session file for this phone
-        if os.path.exists(session_path):
-            try:
-                os.unlink(session_path)
-            except Exception:
-                pass
+        # Remove any old files for this phone
+        for path in (session_path, meta_path):
+            if os.path.exists(path):
+                try:
+                    os.unlink(path)
+                except Exception:
+                    pass
         
         try:
             client = TelegramClient(session_path, int(self.api_id), self.api_hash)
             await client.connect()
             
             if not await client.is_user_authorized():
-                # Request code
-                await client.send_code_request(phone_number)
+                # Request code and capture phone_code_hash
+                sent = await client.send_code_request(phone_number)
                 
-                # NOTE: We intentionally do NOT disconnect or delete the session file here.
-                # The verification step will re-open this session_path.
+                # Persist phone_code_hash so that any worker can verify later
+                try:
+                    with open(meta_path, "w", encoding="utf-8") as f:
+                        json.dump(
+                            {
+                                "phone_number": phone_number,
+                                "phone_code_hash": getattr(sent, "phone_code_hash", None),
+                                "created_at": datetime.now().isoformat(),
+                            },
+                            f,
+                            ensure_ascii=False,
+                        )
+                except Exception:
+                    # Best-effort; if this fails, verification will fail with a clear error
+                    pass
+                
+                # We can safely disconnect here; verify step will reopen the session file
+                await client.disconnect()
+                
                 return {
                     "success": True,
                     "message": f"تم إرسال كود التحقق إلى Telegram الخاص برقم {phone_number}",
                     # Keep the same field name for backward compatibility; we now
-                    # store the deterministic session_path in it.
+                    # store the deterministic session_path in it (unused by backend).
                     "session_id": session_path,
                     "phone_number": phone_number
                 }
@@ -209,12 +232,23 @@ class TelegramPhoneService:
         if not phone_number.startswith('+'):
             phone_number = '+' + phone_number
         
-        # Use deterministic session file path (independent of in‑memory state)
+        # Use deterministic session + meta files (independent of in‑memory state)
         session_path = self._get_session_path(phone_number)
+        meta_path = self._get_meta_path(phone_number)
         
-        if not os.path.exists(session_path):
+        if not os.path.exists(session_path) or not os.path.exists(meta_path):
             # No active login request found for this phone
             raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
+        
+        # Load phone_code_hash from meta file
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            phone_code_hash = meta.get("phone_code_hash")
+            if not phone_code_hash:
+                raise ValueError("بيانات التحقق غير مكتملة، يرجى طلب كود جديد")
+        except Exception as e:
+            raise ValueError("تعذر قراءة بيانات التحقق، يرجى طلب كود جديد") from e
         
         # Open client from session file
         client: Optional[TelegramClient] = None
@@ -255,9 +289,9 @@ class TelegramPhoneService:
                     "username": me.username
                 }
             
-            # Sign in with code
+            # Sign in with code (using stored phone_code_hash)
             try:
-                await client.sign_in(phone_number, code)
+                await client.sign_in(phone=phone_number, code=code, phone_code_hash=phone_code_hash)
             except SessionPasswordNeededError:
                 # 2FA enabled - request password
                 if not password:
@@ -312,9 +346,16 @@ class TelegramPhoneService:
             await client.disconnect()
             
             # Cleanup
-            if session_id:
-                self._pending_logins.pop(session_id, None)
-            os.unlink(session_path)
+            if os.path.exists(session_path):
+                try:
+                    os.unlink(session_path)
+                except Exception:
+                    pass
+            if os.path.exists(meta_path):
+                try:
+                    os.unlink(meta_path)
+                except Exception:
+                    pass
             
             return session_string, {
                 "id": me.id,
@@ -331,9 +372,15 @@ class TelegramPhoneService:
                 except:
                     pass
             if os.path.exists(session_path):
-                os.unlink(session_path)
-            if session_id:
-                self._pending_logins.pop(session_id, None)
+                try:
+                    os.unlink(session_path)
+                except Exception:
+                    pass
+            if os.path.exists(meta_path):
+                try:
+                    os.unlink(meta_path)
+                except Exception:
+                    pass
             
             if isinstance(e, ValueError):
                 raise
