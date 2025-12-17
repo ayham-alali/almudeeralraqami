@@ -59,6 +59,7 @@ from models import (
     mark_outbox_sent,
     get_telegram_phone_session_data,
     update_telegram_phone_session_sync_time,
+    deactivate_telegram_phone_session,
 )
 from agent import process_message
 from message_filters import apply_filters
@@ -284,11 +285,29 @@ class MessagePoller:
             phone_service = TelegramPhoneService()
 
             # Fetch recent messages from Telegram phone account
-            messages = await phone_service.get_recent_messages(
-                session_string=session_string,
-                since_hours=24,
-                limit=50,
-            )
+            try:
+                messages = await phone_service.get_recent_messages(
+                    session_string=session_string,
+                    since_hours=24,
+                    limit=50,
+                )
+            except Exception as e:
+                # If the underlying Telethon client or session is invalid, avoid
+                # spamming errors on every poll and disable the session so the
+                # user can re-link it from the dashboard.
+                msg = str(e)
+                logger.warning(
+                    f"Telegram phone session appears invalid for license {license_id}: {msg}. "
+                    f"Deactivating session so the user can re-connect."
+                )
+                try:
+                    await deactivate_telegram_phone_session(license_id)
+                except Exception as de:
+                    logger.error(
+                        f"Failed to deactivate Telegram phone session for license {license_id}: {de}",
+                        exc_info=True,
+                    )
+                return
 
             if not messages:
                 return
