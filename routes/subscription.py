@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 from database import generate_license_key, validate_license_key
-from security_enhanced import validate_license_key_format
+from security import validate_license_key_format
 
 # Load environment variables
 load_dotenv()
@@ -379,7 +379,7 @@ async def regenerate_subscription_key(
     """Regenerate and save license key for old subscriptions that don't have encrypted key"""
     from database import DB_TYPE, hash_license_key
     from db_helper import get_db, fetch_one, execute_sql, commit_db
-    from security_enhanced import encrypt_sensitive_data
+    from security import encrypt_sensitive_data
     from logging_config import get_logger
     import secrets
     

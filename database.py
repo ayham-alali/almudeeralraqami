@@ -235,7 +235,7 @@ async def generate_license_key(
     key_hash = hash_license_key(raw_key)
     
     # Encrypt the original key for storage
-    from security_enhanced import encrypt_sensitive_data
+    from security import encrypt_sensitive_data
     encrypted_key = encrypt_sensitive_data(raw_key)
     
     expires_at = datetime.now() + timedelta(days=days_valid)
@@ -269,7 +269,7 @@ async def generate_license_key(
 
 async def get_license_key_by_id(license_id: int) -> Optional[str]:
     """Get the original license key by ID (decrypted)"""
-    from security_enhanced import decrypt_sensitive_data
+    from security import decrypt_sensitive_data
     from logging_config import get_logger
     
     logger = get_logger(__name__)

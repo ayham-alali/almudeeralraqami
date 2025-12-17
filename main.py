@@ -203,7 +203,7 @@ app.add_middleware(
     max_age=86400,  # Cache CORS preflight for 24 hours (better for Arab World latency)
 )
 
-# Include routes
+# Include routes (legacy /api/ prefix for backward compatibility)
 app.include_router(integrations_router)    # Email & Telegram
 app.include_router(features_router)        # Customers, Analytics
 app.include_router(whatsapp_router)        # WhatsApp Business
@@ -211,6 +211,28 @@ app.include_router(team_router)            # Team Management
 app.include_router(export_router)          # Export & Reports
 app.include_router(notifications_router)   # Smart Notifications & Integrations
 app.include_router(subscription_router)    # Subscription Key Management
+
+# Health check endpoints (no prefix, accessible at root level)
+from health_check import router as health_router
+app.include_router(health_router)
+
+# Style Learning API (adaptive AI)
+from routes.style_learning import router as style_learning_router
+app.include_router(style_learning_router)
+
+# API Version 1 routes (new /api/v1/ prefix)
+# These mirror the legacy routes but with versioned prefix for future compatibility
+from fastapi import APIRouter
+v1_router = APIRouter(prefix="/api/v1")
+v1_router.include_router(integrations_router.router if hasattr(integrations_router, 'router') else integrations_router, prefix="")
+v1_router.include_router(features_router.router if hasattr(features_router, 'router') else features_router, prefix="")
+v1_router.include_router(whatsapp_router.router if hasattr(whatsapp_router, 'router') else whatsapp_router, prefix="")
+v1_router.include_router(team_router.router if hasattr(team_router, 'router') else team_router, prefix="")
+v1_router.include_router(export_router.router if hasattr(export_router, 'router') else export_router, prefix="")
+v1_router.include_router(notifications_router.router if hasattr(notifications_router, 'router') else notifications_router, prefix="")
+v1_router.include_router(subscription_router, prefix="")
+# Note: v1_router is prepared but routes already have /api/ prefix
+# Future versions can modify prefixes as needed
 
 
 # ============ License Key Middleware ============
