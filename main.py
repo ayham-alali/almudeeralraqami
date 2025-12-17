@@ -216,9 +216,12 @@ app.include_router(subscription_router)    # Subscription Key Management
 from health_check import router as health_router
 app.include_router(health_router)
 
-# Style Learning API (adaptive AI)
-from routes.style_learning import router as style_learning_router
-app.include_router(style_learning_router)
+# Style Learning API (adaptive AI) - optional, may require additional setup
+try:
+    from routes.style_learning import router as style_learning_router
+    app.include_router(style_learning_router)
+except Exception as e:
+    logger.warning(f"Style learning router not loaded: {e}")
 
 # API Version 1 routes (new /api/v1/ prefix)
 # These mirror the legacy routes but with versioned prefix for future compatibility
