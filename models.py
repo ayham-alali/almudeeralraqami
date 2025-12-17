@@ -643,19 +643,15 @@ async def save_inbox_message(
 ) -> int:
     """Save incoming message to inbox"""
     # Use unified DB helper so this works with both SQLite and PostgreSQL.
-    from db_helper import DB_TYPE  # local import to avoid circulars
-
-    # Normalize timestamp based on backend
+    # To avoid asyncpg timezone adapter issues, we store timestamps as ISO
+    # strings in both databases and let the database cast from text to
+    # TIMESTAMP. This keeps things simple and robust.
     if received_at is None:
         received = datetime.utcnow()
     else:
         received = received_at
 
-    ts_value: Any
-    if DB_TYPE == "postgresql":
-        ts_value = received  # real datetime for TIMESTAMP column
-    else:
-        ts_value = received.isoformat()
+    ts_value: Any = received.isoformat()
 
     async with get_db() as db:
         await execute_sql(
