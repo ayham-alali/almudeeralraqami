@@ -4,6 +4,8 @@ Database Helper - Unified interface for SQLite and PostgreSQL
 
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import Iterable, List, Any
 
 DB_TYPE = os.getenv("DB_TYPE", "sqlite").lower()
 DATABASE_PATH = os.getenv("DATABASE_PATH", "almudeer.db")
@@ -45,12 +47,36 @@ def adapt_sql_for_db(sql: str) -> str:
     return sql
 
 
+def _normalize_params(params: Iterable[Any] | None):
+    """
+    Normalize parameters before sending to the database.
+
+    For PostgreSQL, convert naive datetimes to timezone-aware UTC datetimes
+    to avoid 'can't subtract offset-naive and offset-aware datetimes' errors
+    inside asyncpg's adapters.
+    """
+    if DB_TYPE != "postgresql" or not params:
+        return params
+
+    normalized: List[Any] = []
+    for p in params:
+        if isinstance(p, datetime):
+            if p.tzinfo is None:
+                normalized.append(p.replace(tzinfo=timezone.utc))
+            else:
+                normalized.append(p.astimezone(timezone.utc))
+        else:
+            normalized.append(p)
+    return normalized
+
+
 async def execute_sql(db, sql: str, params=None):
     """Execute SQL with proper parameter handling"""
     sql = adapt_sql_for_db(sql)
     if DB_TYPE == "postgresql":
         # Convert SQLite-style ? placeholders to $1, $2, ... for asyncpg
         if params:
+            params = list(_normalize_params(params))
             sql = _convert_sql_params(sql, params)
             return await db.execute(sql, *params)
         else:
@@ -85,6 +111,7 @@ async def fetch_all(db, sql: str, params=None):
     sql = adapt_sql_for_db(sql)
     if DB_TYPE == "postgresql":
         if params:
+            params = list(_normalize_params(params))
             sql = _convert_sql_params(sql, params)
             rows = await db.fetch(sql, *params)
         else:
@@ -107,6 +134,7 @@ async def fetch_one(db, sql: str, params=None):
     sql = adapt_sql_for_db(sql)
     if DB_TYPE == "postgresql":
         if params:
+            params = list(_normalize_params(params))
             sql = _convert_sql_params(sql, params)
             row = await db.fetchrow(sql, *params)
         else:
