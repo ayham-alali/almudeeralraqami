@@ -43,9 +43,16 @@ class TelegramPhoneService:
                 "Get them from https://my.telegram.org/apps"
             )
         
-        # In-memory storage for temporary login states
-        # In production, consider using Redis or database
+        # In-memory storage for temporary login states (kept for backward compatibility)
+        # NOTE: The new implementation relies primarily on deterministic session files,
+        # so that any worker process can handle the verification step.
         self._pending_logins: Dict[str, Dict] = {}
+
+    def _get_session_path(self, phone_number: str) -> str:
+        """Get deterministic session file path for a phone number."""
+        safe_phone = phone_number.replace("+", "").replace(" ", "")
+        tmp_dir = tempfile.gettempdir()
+        return os.path.join(tmp_dir, f"almudeer_tg_phone_{safe_phone}.session")
     
     def _cleanup_expired_logins(self, max_age_minutes: int = 10):
         """Clean up expired login sessions (older than max_age_minutes)"""
@@ -94,63 +101,46 @@ class TelegramPhoneService:
         if not phone_number.startswith('+'):
             phone_number = '+' + phone_number
         
-        # Create temporary client for code request
-        # We'll create a proper client with session after verification
-        session_id = f"temp_{phone_number}_{datetime.now().timestamp()}"
+        # Use deterministic session file per phone so any worker can verify
+        session_path = self._get_session_path(phone_number)
+        
+        # Remove any old session file for this phone
+        if os.path.exists(session_path):
+            try:
+                os.unlink(session_path)
+            except Exception:
+                pass
         
         try:
-            # Create temporary session file
-            temp_session = tempfile.NamedTemporaryFile(
-                mode='w+',
-                suffix='.session',
-                delete=False
-            )
-            temp_session_path = temp_session.name
-            temp_session.close()
-            
-            client = TelegramClient(temp_session_path, int(self.api_id), self.api_hash)
+            client = TelegramClient(session_path, int(self.api_id), self.api_hash)
             await client.connect()
             
             if not await client.is_user_authorized():
                 # Request code
                 await client.send_code_request(phone_number)
                 
-                # IMPORTANT: Keep client connected! Don't disconnect yet.
-                # The client needs to stay connected for code verification.
-                # Store pending login info with client reference
-                self._pending_logins[session_id] = {
-                    "phone_number": phone_number,
-                    "session_path": temp_session_path,
-                    "created_at": datetime.now(),
-                    "client": client,  # Keep client connected
-                }
-                
+                # NOTE: We intentionally do NOT disconnect or delete the session file here.
+                # The verification step will re-open this session_path.
                 return {
                     "success": True,
                     "message": f"تم إرسال كود التحقق إلى Telegram الخاص برقم {phone_number}",
-                    "session_id": session_id,
+                    # Keep the same field name for backward compatibility; we now
+                    # store the deterministic session_path in it.
+                    "session_id": session_path,
                     "phone_number": phone_number
                 }
             else:
                 # Already authorized, convert file session to string
-                # Save session to file first (ensures it's saved)
                 client.session.save()
                 
                 # Convert file session to StringSession format
-                # Create a new StringSession and initialize it from the file session
                 me = await client.get_me()
-                # We need to copy the session state properly
-                # The cleanest way: save session file, then load it as StringSession would load it
-                # But since we can't easily convert, we'll create a new StringSession client
-                # with the same credentials and it will use the existing auth
                 string_session = StringSession()
-                # Copy necessary session data
                 string_session.set_dc(
                     client.session.dc_id,
                     client.session.server_address,
                     client.session.port
                 )
-                # Copy auth key if available
                 if hasattr(client.session, '_auth_key') and client.session._auth_key:
                     string_session._auth_key = client.session._auth_key
                 elif hasattr(client.session, 'auth_key') and client.session.auth_key:
@@ -159,7 +149,6 @@ class TelegramPhoneService:
                 session_string = string_session.save()
                 
                 await client.disconnect()
-                os.unlink(temp_session_path)  # Cleanup
                 
                 return {
                     "success": True,
@@ -171,22 +160,32 @@ class TelegramPhoneService:
         except PhoneNumberUnoccupiedError:
             if 'client' in locals():
                 await client.disconnect()
-            if os.path.exists(temp_session_path):
-                os.unlink(temp_session_path)
+            # Clean up deterministic session file if it exists
+            if os.path.exists(session_path):
+                try:
+                    os.unlink(session_path)
+                except Exception:
+                    pass
             raise ValueError(f"الرقم {phone_number} غير مسجل في Telegram")
         
         except FloodWaitError as e:
             if 'client' in locals():
                 await client.disconnect()
-            if os.path.exists(temp_session_path):
-                os.unlink(temp_session_path)
+            if os.path.exists(session_path):
+                try:
+                    os.unlink(session_path)
+                except Exception:
+                    pass
             raise ValueError(f"تم إرسال عدد كبير من الطلبات. يرجى الانتظار {e.seconds} ثانية")
         
         except Exception as e:
             if 'client' in locals():
                 await client.disconnect()
-            if os.path.exists(temp_session_path):
-                os.unlink(temp_session_path)
+            if os.path.exists(session_path):
+                try:
+                    os.unlink(session_path)
+                except Exception:
+                    pass
             raise ValueError(f"خطأ في طلب الكود: {str(e)}")
     
     async def verify_code(
@@ -210,69 +209,18 @@ class TelegramPhoneService:
         if not phone_number.startswith('+'):
             phone_number = '+' + phone_number
         
-        # Find pending login
-        session_path = None
-        client = None
+        # Use deterministic session file path (independent of in‑memory state)
+        session_path = self._get_session_path(phone_number)
         
-        if session_id and session_id in self._pending_logins:
-            pending = self._pending_logins[session_id]
-            session_path = pending.get("session_path")
-            # Check if we have a stored client (from start_login or 2FA retry)
-            if "client" in pending:
-                client = pending["client"]
-            # Verify phone matches
-            if pending["phone_number"] != phone_number:
-                raise ValueError("رقم الهاتف لا يطابق الطلب الأصلي")
-        else:
-            # Try to find by phone number (fallback)
-            for sid, data in self._pending_logins.items():
-                if data["phone_number"] == phone_number:
-                    session_path = data.get("session_path")
-                    if "client" in data:
-                        client = data["client"]
-                    session_id = sid
-                    break
-        
-        # If we have a stored client, use it (it's already connected)
-        if client:
-            # Client already connected from start_login
-            # Make sure it's still connected
-            try:
-                if not client.is_connected():
-                    await client.connect()
-            except Exception as e:
-                # If connection failed, try to reconnect from session file
-                if session_path and os.path.exists(session_path):
-                    try:
-                        client = TelegramClient(session_path, int(self.api_id), self.api_hash)
-                        await client.connect()
-                    except:
-                        # Clean up and raise error
-                        if session_id:
-                            self._pending_logins.pop(session_id, None)
-                        raise ValueError(f"فشل الاتصال بالجلسة. يرجى طلب كود جديد")
-                else:
-                    # Clean up and raise error
-                    if session_id:
-                        self._pending_logins.pop(session_id, None)
-                    raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
-        elif session_path and os.path.exists(session_path):
-            # Fallback: Create new client from session file
-            # This shouldn't happen if start_login worked correctly, but handle it gracefully
-            try:
-                client = TelegramClient(session_path, int(self.api_id), self.api_hash)
-                await client.connect()
-            except Exception as e:
-                # Clean up and raise error
-                if session_id:
-                    self._pending_logins.pop(session_id, None)
-                raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
-        else:
-            # Clean up any expired entries
-            self._cleanup_expired_logins()
+        if not os.path.exists(session_path):
+            # No active login request found for this phone
             raise ValueError("انتهت صلاحية طلب تسجيل الدخول. يرجى طلب كود جديد")
         
+        # Open client from session file
+        client: Optional[TelegramClient] = None
         try:
+            client = TelegramClient(session_path, int(self.api_id), self.api_hash)
+            await client.connect()
             if await client.is_user_authorized():
                 # Already authorized, convert file session to string
                 client.session.save()
