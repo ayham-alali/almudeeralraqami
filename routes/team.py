@@ -232,16 +232,17 @@ async def reset_member_password(
     # Generate new temporary password
     temp_password = generate_temp_password()
     password_hash = hash_password(temp_password)
-    
-    import aiosqlite
-    from models import DATABASE_PATH
-    
-    async with aiosqlite.connect(DATABASE_PATH) as db:
-        await db.execute(
+
+    # Use unified DB helper so this works on both SQLite and PostgreSQL
+    from db_helper import get_db, execute_sql, commit_db
+
+    async with get_db() as db:
+        await execute_sql(
+            db,
             "UPDATE team_members SET password_hash = ? WHERE id = ?",
-            (password_hash, member_id)
+            [password_hash, member_id],
         )
-        await db.commit()
+        await commit_db(db)
     
     return {
         "success": True,

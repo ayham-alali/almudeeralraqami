@@ -13,7 +13,7 @@ import csv
 import json
 
 from dependencies import get_license_from_header
-from db_helper import get_db, fetch_all, fetch_one
+from db_helper import get_db, fetch_all, fetch_one, DB_TYPE
 
 router = APIRouter(prefix="/api/export", tags=["Export"])
 
@@ -56,8 +56,13 @@ async def get_export_data(license_id: int, start: datetime, end: datetime):
         "crm_entries": [],
     }
 
-    date_start = start.date().isoformat()
-    date_end = end.date().isoformat()
+    # For PostgreSQL we pass real date objects; for SQLite we use ISO strings.
+    if DB_TYPE == "postgresql":
+        date_start = start.date()
+        date_end = end.date()
+    else:
+        date_start = start.date().isoformat()
+        date_end = end.date().isoformat()
 
     async with get_db() as db:
         # Analytics summary
