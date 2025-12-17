@@ -5,7 +5,7 @@ Supports both SQLite (development) and PostgreSQL (production)
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Any
 import json
 
@@ -641,17 +641,32 @@ async def save_inbox_message(
     channel_message_id: str = None,
     received_at: datetime = None
 ) -> int:
-    """Save incoming message to inbox"""
-    # Use unified DB helper so this works with both SQLite and PostgreSQL.
-    # To avoid asyncpg timezone adapter issues, we store timestamps as ISO
-    # strings in both databases and let the database cast from text to
-    # TIMESTAMP. This keeps things simple and robust.
-    if received_at is None:
-        received = datetime.utcnow()
-    else:
-        received = received_at
+    """Save incoming message to inbox (SQLite & PostgreSQL compatible)."""
+    from db_helper import DB_TYPE  # local import to avoid circulars
 
-    ts_value: Any = received.isoformat()
+    # Normalize received_at to a timezone-aware UTC datetime
+    if isinstance(received_at, str):
+        try:
+            received = datetime.fromisoformat(received_at)
+        except ValueError:
+            received = datetime.utcnow()
+    elif isinstance(received_at, datetime):
+        received = received_at
+    else:
+        received = datetime.utcnow()
+
+    if received.tzinfo is None:
+        received = received.replace(tzinfo=timezone.utc)
+    else:
+        received = received.astimezone(timezone.utc)
+
+    # For PostgreSQL (asyncpg), pass a real datetime object.
+    # For SQLite, use ISO string.
+    ts_value: Any
+    if DB_TYPE == "postgresql":
+        ts_value = received
+    else:
+        ts_value = received.isoformat()
 
     async with get_db() as db:
         await execute_sql(

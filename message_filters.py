@@ -101,7 +101,17 @@ def filter_duplicate(message: Dict, recent_messages: List[Dict], time_window_min
     for recent in recent_messages:
         if recent.get("sender_contact") == sender or recent.get("sender_id") == sender:
             recent_body = recent.get("body", "").strip()[:100]
-            recent_time = datetime.fromisoformat(recent.get("received_at", now.isoformat()))
+
+            raw_received = recent.get("received_at")
+            if isinstance(raw_received, str):
+                try:
+                    recent_time = datetime.fromisoformat(raw_received)
+                except ValueError:
+                    recent_time = now
+            elif isinstance(raw_received, datetime):
+                recent_time = raw_received
+            else:
+                recent_time = now
             
             # Check if same content and within time window
             if recent_body == body:
