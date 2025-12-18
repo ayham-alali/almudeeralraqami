@@ -133,6 +133,16 @@ migration_manager.register_migration(
     """
 )
 
+# Migration to add user_preferences columns
+migration_manager.register_migration(
+    version=4,
+    name="add_user_preferences_columns",
+    up_sql="""
+        -- Add missing columns to user_preferences table
+        -- These columns are needed for AI tone configuration
+    """
+)
+
 
 async def ensure_inbox_columns():
     """Ensure inbox_messages has language and dialect columns (run on startup)."""
@@ -164,4 +174,43 @@ async def ensure_inbox_columns():
                 await commit_db(db)
             except:
                 pass
+
+
+async def ensure_user_preferences_columns():
+    """Ensure user_preferences has all required columns (run on startup)."""
+    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
+    from logging_config import get_logger
+    
+    logger = get_logger(__name__)
+    
+    # List of columns that should exist in user_preferences
+    columns_to_add = [
+        ("tone", "TEXT DEFAULT 'formal'"),
+        ("custom_tone_guidelines", "TEXT"),
+        ("business_name", "TEXT"),
+        ("industry", "TEXT"),
+        ("products_services", "TEXT"),
+        ("preferred_languages", "TEXT"),
+        ("reply_length", "TEXT"),
+        ("formality_level", "TEXT"),
+    ]
+    
+    async with get_db() as db:
+        for col_name, col_type in columns_to_add:
+            try:
+                if DB_TYPE == "postgresql":
+                    await execute_sql(db, f"""
+                        ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS {col_name} {col_type}
+                    """)
+                else:
+                    # SQLite - try to add column, ignore error if exists
+                    await execute_sql(db, f"ALTER TABLE user_preferences ADD COLUMN {col_name} {col_type}")
+                await commit_db(db)
+            except Exception as e:
+                # Column already exists or other error - log and continue
+                if "duplicate column" not in str(e).lower() and "already exists" not in str(e).lower():
+                    logger.debug(f"Note: user_preferences.{col_name} check: {e}")
+                pass
+    
+    logger.info("User preferences columns verified")
 

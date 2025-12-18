@@ -120,6 +120,13 @@ async def lifespan(app: FastAPI):
             logger.info("Inbox columns verified (language, dialect)")
         except Exception as e:
             logger.warning(f"Inbox column migration warning: {e}")
+        
+        # Ensure user_preferences columns exist (tone, business_name, etc.)
+        try:
+            from migrations import ensure_user_preferences_columns
+            await ensure_user_preferences_columns()
+        except Exception as e:
+            logger.warning(f"User preferences column migration warning: {e}")
         demo_key = await create_demo_license()
         if demo_key:
             logger.info(f"Demo license key created: {demo_key[:20]}...")

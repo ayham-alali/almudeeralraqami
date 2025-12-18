@@ -47,6 +47,26 @@ class LLMConfig:
     cache_enabled: bool = field(default_factory=lambda: os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true")
     cache_ttl_seconds: int = field(default_factory=lambda: int(os.getenv("LLM_CACHE_TTL_HOURS", "24")) * 3600)
     cache_max_size: int = 1000
+    
+    # Concurrency control - CRITICAL for preventing rate limits
+    # Max 3 concurrent LLM requests at a time (prevents burst rate limiting)
+    max_concurrent_requests: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_CONCURRENT", "3")))
+
+
+# ============ Global Concurrency Control ============
+
+# Global semaphore to limit concurrent LLM API calls
+# This prevents burst requests when multiple messages are processed simultaneously
+_llm_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def get_llm_semaphore(max_concurrent: int = 3) -> asyncio.Semaphore:
+    """Get or create global semaphore for LLM concurrency control"""
+    global _llm_semaphore
+    if _llm_semaphore is None:
+        _llm_semaphore = asyncio.Semaphore(max_concurrent)
+        logger.info(f"LLM concurrency limiter initialized: max {max_concurrent} concurrent requests")
+    return _llm_semaphore
 
 
 # ============ Response Caching ============
@@ -526,14 +546,20 @@ async def llm_generate(
     """
     Convenience function for generating LLM responses.
     
+    Uses global semaphore to limit concurrent requests and prevent rate limiting.
     Returns just the content string (or None) for backward compatibility.
     """
     service = get_llm_service()
-    response = await service.generate(
-        prompt=prompt,
-        system=system,
-        json_mode=json_mode,
-        max_tokens=max_tokens,
-        temperature=temperature
-    )
-    return response.content if response else None
+    semaphore = get_llm_semaphore(service.config.max_concurrent_requests)
+    
+    # Wait for semaphore - limits to N concurrent LLM requests
+    async with semaphore:
+        logger.debug(f"Acquired LLM semaphore, processing request...")
+        response = await service.generate(
+            prompt=prompt,
+            system=system,
+            json_mode=json_mode,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+        return response.content if response else None
