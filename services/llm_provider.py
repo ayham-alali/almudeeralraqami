@@ -49,8 +49,8 @@ class LLMConfig:
     cache_max_size: int = 1000
     
     # Concurrency control - CRITICAL for preventing rate limits
-    # Default to 2 concurrent requests (reduced from 3 for better rate limit handling)
-    max_concurrent_requests: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_CONCURRENT", "2")))
+    # Default to 3 concurrent requests
+    max_concurrent_requests: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_CONCURRENT", "3")))
     
     # Post-request delay in seconds - adds breathing room between requests
     post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "0.5")))

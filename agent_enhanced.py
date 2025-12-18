@@ -6,7 +6,6 @@ Human-like responses with persona support, anti-robotic patterns, and style lear
 import json
 import re
 from typing import TypedDict, Optional, Dict, Any
-import httpx
 import os
 
 from langgraph.graph import StateGraph, END
@@ -28,10 +27,8 @@ from humanize import (
 )
 
 
-# Configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+# Note: LLM configuration is centralized in services/llm_provider.py
+# This file uses llm_generate() which handles OpenAI/Gemini failover
 
 
 class EnhancedAgentState(TypedDict):
@@ -89,42 +86,25 @@ async def call_llm_enhanced(
     json_mode: bool = False,
     max_tokens: int = 600,
 ) -> Optional[str]:
-    """Enhanced LLM call with dynamic temperature"""
-    if not OPENAI_API_KEY:
-        return None
-
+    """Enhanced LLM call using centralized llm_generate service.
+    
+    Uses the centralized LLM provider which supports:
+    - OpenAI and Gemini with automatic failover
+    - Rate limiting and retry logic
+    - Response caching
+    """
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            body = {
-                "model": OPENAI_MODEL,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
-
-            if json_mode:
-                body["response_format"] = {"type": "json_object"}
-
-            response = await client.post(
-                f"{OPENAI_BASE_URL}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json=body,
-            )
-
-            response.raise_for_status()
-            data = response.json()
-            content = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
-            return content.strip() if content else None
+        from services.llm_provider import llm_generate
+        
+        response = await llm_generate(
+            prompt=prompt,
+            system=system,
+            json_mode=json_mode,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+        
+        return response
     except Exception as e:
         print(f"LLM call failed: {e}")
         return None

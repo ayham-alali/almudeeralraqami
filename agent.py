@@ -14,10 +14,8 @@ import os
 # LangGraph imports
 from langgraph.graph import StateGraph, END
 
-# Configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
-OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+# Note: LLM configuration is centralized in services/llm_provider.py
+# This file uses llm_generate() which handles OpenAI/Gemini failover
 
 # Base system prompt for Arabic business context
 BASE_SYSTEM_PROMPT = """أنت مساعد مكتبي ذكي للشركات في العالم العربي. تتحدث العربية الفصحى بأسلوب مهني ومهذب.
@@ -149,62 +147,11 @@ async def call_llm(
         )
         
         return response
-    except ImportError:
-        # Fallback to direct OpenAI call if service not available
-        print("LLM service not available, using direct OpenAI call")
-        return await _direct_openai_call(prompt, system, json_mode, max_tokens)
     except Exception as e:
+        # If LLM fails, return None to trigger rule-based fallback
         print(f"LLM service error: {e}")
         return None
 
-
-async def _direct_openai_call(
-    prompt: str,
-    system: Optional[str] = None,
-    json_mode: bool = False,
-    max_tokens: int = 600,
-) -> Optional[str]:
-    """Direct OpenAI call fallback (if llm_provider service unavailable)"""
-    if not OPENAI_API_KEY:
-        return None
-    
-    effective_system = system or BASE_SYSTEM_PROMPT
-    
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            body: dict = {
-                "model": OPENAI_MODEL,
-                "messages": [
-                    {"role": "system", "content": effective_system},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.3,
-                "max_tokens": max_tokens,
-            }
-            
-            if json_mode:
-                body["response_format"] = {"type": "json_object"}
-            
-            response = await client.post(
-                f"{OPENAI_BASE_URL}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json=body,
-            )
-            
-            response.raise_for_status()
-            data = response.json()
-            content = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
-            return content.strip() if content else None
-    except Exception as e:
-        print(f"Direct OpenAI call failed: {e}")
-        return None
 
 
 def rule_based_classify(message: str) -> dict:
