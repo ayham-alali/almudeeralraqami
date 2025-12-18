@@ -803,17 +803,38 @@ async def configure_telegram(
     license: dict = Depends(get_license_from_header)
 ):
     """Configure Telegram bot integration"""
+    from logging_config import get_logger
+    logger = get_logger("telegram_config")
+    
+    # Validate token format (should be like 123456789:ABCdefGHI...)
+    bot_token = config.bot_token.strip()
+    if ":" not in bot_token:
+        raise HTTPException(
+            status_code=400, 
+            detail="توكن البوت غير صالح. يجب أن يكون بالصيغة: 123456789:ABCdefGHI..."
+        )
+    
+    parts = bot_token.split(":")
+    if len(parts) != 2 or not parts[0].isdigit():
+        raise HTTPException(
+            status_code=400, 
+            detail="توكن البوت غير صالح. تأكد من نسخ التوكن كاملاً من BotFather"
+        )
+    
+    logger.info(f"Configuring Telegram bot for license {license['license_id']}, token prefix: {parts[0]}")
+    
     # Test bot token
-    telegram_service = TelegramService(config.bot_token.strip())
+    telegram_service = TelegramService(bot_token)
     success, message, bot_info = await telegram_service.test_connection()
     
     if not success:
+        logger.error(f"Telegram bot test failed: {message}")
         raise HTTPException(status_code=400, detail=message)
     
     # Save configuration
     config_id = await save_telegram_config(
         license_id=license["license_id"],
-        bot_token=config.bot_token,
+        bot_token=bot_token,  # Use the stripped token
         bot_username=bot_info.get("username"),
         auto_reply=config.auto_reply_enabled
     )
@@ -822,18 +843,56 @@ async def configure_telegram(
     base_url = str(request.base_url).rstrip('/')
     webhook_url = f"{base_url}/api/integrations/telegram/webhook/{license['license_id']}"
     
+    webhook_success = False
+    webhook_error = None
     try:
         await telegram_service.set_webhook(webhook_url)
+        webhook_success = True
+        logger.info(f"Webhook set successfully: {webhook_url}")
     except Exception as e:
-        print(f"Webhook setup error: {e}")
-        # Continue anyway - webhook can be set up later
+        webhook_error = str(e)
+        logger.error(f"Webhook setup error: {e}")
     
     return {
         "success": True,
         "message": "تم حفظ إعدادات تيليجرام بنجاح",
         "bot_username": bot_info.get("username"),
-        "webhook_url": webhook_url
+        "webhook_url": webhook_url,
+        "webhook_registered": webhook_success,
+        "webhook_error": webhook_error
     }
+
+
+@router.post("/telegram/set-webhook")
+async def set_telegram_webhook(
+    request: Request,
+    license: dict = Depends(get_license_from_header)
+):
+    """Manually set the Telegram webhook (useful if initial setup failed)"""
+    from models import get_telegram_bot_token
+    from logging_config import get_logger
+    logger = get_logger("telegram_webhook")
+    
+    bot_token = await get_telegram_bot_token(license["license_id"])
+    if not bot_token:
+        raise HTTPException(status_code=400, detail="Telegram bot not configured")
+    
+    telegram_service = TelegramService(bot_token)
+    
+    base_url = str(request.base_url).rstrip('/')
+    webhook_url = f"{base_url}/api/integrations/telegram/webhook/{license['license_id']}"
+    
+    try:
+        await telegram_service.set_webhook(webhook_url)
+        logger.info(f"Webhook manually set: {webhook_url}")
+        return {
+            "success": True,
+            "message": "تم تسجيل الـ webhook بنجاح",
+            "webhook_url": webhook_url
+        }
+    except Exception as e:
+        logger.error(f"Manual webhook setup failed: {e}")
+        raise HTTPException(status_code=500, detail=f"فشل تسجيل الـ webhook: {str(e)}")
 
 
 @router.get("/telegram/config")
