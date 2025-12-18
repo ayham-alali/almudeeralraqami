@@ -299,3 +299,145 @@ async def get_pending_outbox(license_id: int) -> List[dict]:
             [license_id],
         )
         return rows
+
+
+async def get_inbox_conversations(
+    license_id: int,
+    status: str = None,
+    channel: str = None,
+    limit: int = 50,
+    offset: int = 0
+) -> List[dict]:
+    """
+    Get inbox messages grouped by sender (chat-style view).
+    Returns one row per sender with their latest message and stats.
+    """
+    from db_helper import DB_TYPE
+    
+    # Build WHERE clause
+    where_clauses = ["license_key_id = ?"]
+    params = [license_id]
+    
+    if status:
+        where_clauses.append("status = ?")
+        params.append(status)
+    
+    if channel:
+        where_clauses.append("channel = ?")
+        params.append(channel)
+    
+    where_sql = " AND ".join(where_clauses)
+    
+    # Use database-specific query for grouping
+    if DB_TYPE == "postgresql":
+        query = f"""
+            WITH ranked_messages AS (
+                SELECT *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY COALESCE(sender_contact, sender_id::text, 'unknown')
+                        ORDER BY created_at DESC
+                    ) as rn,
+                    COUNT(*) OVER (
+                        PARTITION BY COALESCE(sender_contact, sender_id::text, 'unknown')
+                    ) as message_count,
+                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) OVER (
+                        PARTITION BY COALESCE(sender_contact, sender_id::text, 'unknown')
+                    ) as unread_count
+                FROM inbox_messages
+                WHERE {where_sql}
+            )
+            SELECT 
+                id, channel, sender_name, sender_contact, sender_id, subject, body,
+                intent, urgency, sentiment, language, dialect, summary, draft_response,
+                status, created_at, updated_at, received_at, replied_at,
+                message_count, unread_count
+            FROM ranked_messages
+            WHERE rn = 1
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+        """
+    else:
+        # SQLite version - simpler approach using GROUP BY
+        query = f"""
+            SELECT 
+                m.*,
+                (SELECT COUNT(*) FROM inbox_messages m2 
+                 WHERE m2.license_key_id = m.license_key_id 
+                 AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
+                ) as message_count,
+                (SELECT COUNT(*) FROM inbox_messages m2 
+                 WHERE m2.license_key_id = m.license_key_id 
+                 AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
+                 AND m2.status = 'pending'
+                ) as unread_count
+            FROM inbox_messages m
+            WHERE {where_sql}
+            AND m.id = (
+                SELECT m3.id FROM inbox_messages m3
+                WHERE m3.license_key_id = m.license_key_id
+                AND COALESCE(m3.sender_contact, m3.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
+                ORDER BY m3.created_at DESC
+                LIMIT 1
+            )
+            ORDER BY m.created_at DESC
+            LIMIT ? OFFSET ?
+        """
+    
+    params.extend([limit, offset])
+    
+    async with get_db() as db:
+        rows = await fetch_all(db, query, params)
+        return rows
+
+
+async def get_inbox_conversations_count(
+    license_id: int,
+    status: str = None,
+    channel: str = None
+) -> int:
+    """Get total number of unique conversations (senders)."""
+    where_clauses = ["license_key_id = ?"]
+    params = [license_id]
+    
+    if status:
+        where_clauses.append("status = ?")
+        params.append(status)
+    
+    if channel:
+        where_clauses.append("channel = ?")
+        params.append(channel)
+    
+    where_sql = " AND ".join(where_clauses)
+    
+    query = f"""
+        SELECT COUNT(DISTINCT COALESCE(sender_contact, sender_id, 'unknown')) as count
+        FROM inbox_messages
+        WHERE {where_sql}
+    """
+    
+    async with get_db() as db:
+        row = await fetch_one(db, query, params)
+        return row["count"] if row else 0
+
+
+async def get_conversation_messages(
+    license_id: int,
+    sender_contact: str,
+    limit: int = 50
+) -> List[dict]:
+    """Get all messages from a specific sender (for conversation detail view)."""
+    # Handle the tg: prefix for telegram user IDs
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
+            SELECT * FROM inbox_messages
+            WHERE license_key_id = ?
+            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            [license_id, sender_contact, sender_contact, f"%{sender_contact}%", limit]
+        )
+        return rows
+

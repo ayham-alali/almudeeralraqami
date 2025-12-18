@@ -27,6 +27,9 @@ from models import (
     update_inbox_analysis,
     get_inbox_messages,
     get_inbox_messages_count,
+    get_inbox_conversations,
+    get_inbox_conversations_count,
+    get_conversation_messages,
     update_inbox_status,
     create_outbox_message,
     approve_outbox_message,
@@ -1076,12 +1079,18 @@ async def telegram_webhook(
     
     # Save to inbox
     logger.info(f"Saving Telegram message to inbox: {parsed['text'][:50]}...")
+    
+    # Use username if available, otherwise use telegram user_id as contact identifier
+    # This ensures customers are always created even if user has no username
+    sender_contact = parsed["username"] if parsed["username"] else f"tg:{parsed['user_id']}"
+    sender_name = f"{parsed['first_name']} {parsed['last_name']}".strip() or f"Telegram User"
+    
     msg_id = await save_inbox_message(
         license_id=license_id,
         channel="telegram",
         body=parsed["text"],
-        sender_name=f"{parsed['first_name']} {parsed['last_name']}".strip(),
-        sender_contact=parsed["username"],
+        sender_name=sender_name,
+        sender_contact=sender_contact,
         sender_id=parsed["user_id"],
         channel_message_id=str(parsed["message_id"]),
         received_at=parsed["date"]
@@ -1251,6 +1260,74 @@ async def get_inbox_message(
     if not message:
         raise HTTPException(status_code=404, detail="الرسالة غير موجودة")
     return {"message": message}
+
+
+# ============ Conversations (Chat-Style Inbox) ============
+
+@router.get("/conversations")
+async def get_conversations(
+    status: Optional[str] = None,
+    channel: Optional[str] = None,
+    limit: int = 25,
+    offset: int = 0,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Get inbox grouped by sender (chat-style view).
+    Each item represents a unique contact with their latest message and message count.
+    """
+    conversations = await get_inbox_conversations(
+        license_id=license["license_id"],
+        status=status,
+        channel=channel,
+        limit=limit,
+        offset=offset
+    )
+    
+    # Get total count for pagination
+    total = await get_inbox_conversations_count(
+        license_id=license["license_id"],
+        status=status,
+        channel=channel
+    )
+    
+    return {
+        "conversations": conversations,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(conversations) < total
+    }
+
+
+@router.get("/conversations/{sender_contact:path}")
+async def get_conversation_detail(
+    sender_contact: str,
+    limit: int = 100,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Get all messages from a specific sender (conversation thread view).
+    Shows messages in chronological order (oldest first).
+    """
+    messages = await get_conversation_messages(
+        license_id=license["license_id"],
+        sender_contact=sender_contact,
+        limit=limit
+    )
+    
+    if not messages:
+        raise HTTPException(status_code=404, detail="المحادثة غير موجودة")
+    
+    # Get sender info from first message
+    sender_name = messages[0].get("sender_name", "عميل") if messages else "عميل"
+    
+    return {
+        "sender_name": sender_name,
+        "sender_contact": sender_contact,
+        "messages": messages,
+        "total": len(messages)
+    }
 
 
 @router.post("/inbox/{message_id}/analyze")
