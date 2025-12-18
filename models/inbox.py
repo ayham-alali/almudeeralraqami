@@ -348,7 +348,7 @@ async def get_inbox_conversations(
             )
             SELECT 
                 id, channel, sender_name, sender_contact, sender_id, subject, body,
-                intent, urgency, sentiment, language, dialect, summary, draft_response,
+                intent, urgency, sentiment, language, dialect, ai_summary, ai_draft_response,
                 status, created_at, updated_at, received_at, replied_at,
                 message_count, unread_count
             FROM ranked_messages
