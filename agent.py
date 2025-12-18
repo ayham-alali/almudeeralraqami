@@ -513,7 +513,7 @@ async def draft_node(state: AgentState) -> AgentState:
         prompt,
         system=build_system_prompt(state.get("preferences")),
         json_mode=False,
-        max_tokens=300,
+        max_tokens=800,  # Arabic needs more tokens per character
     )
     
     # Lower threshold to 15 - accept short but valid responses like "بالطبع، كيف أساعدك؟"

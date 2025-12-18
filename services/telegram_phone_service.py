@@ -318,13 +318,19 @@ class TelegramPhoneService:
                 
                 # Get recent messages from this dialog
                 try:
+                    # Note: iter_messages default order is newest first
+                    # offset_date returns messages BEFORE that date, so we don't use it
+                    # Instead, we filter by date manually
                     async for message in client.iter_messages(
                         dialog.entity,
-                        limit=10,
-                        offset_date=since_time
+                        limit=20,  # Get more to filter
                     ):
                         if not message.text or message.out:  # Skip outgoing messages
                             continue
+                        
+                        # Skip messages older than since_time
+                        if message.date and message.date.replace(tzinfo=None) < since_time:
+                            break  # Messages are in reverse chronological order
                         
                         sender = await message.get_sender()
                         sender_name = ""
