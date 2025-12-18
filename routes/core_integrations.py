@@ -49,6 +49,115 @@ router = APIRouter(prefix="/api/integrations", tags=["Integrations"])
 def debug_integrations():
     return {"status": "ok", "message": "Integrations router is loaded"}
 
+
+@router.get("/llm-health")
+async def check_llm_health(license: dict = Depends(get_license_from_header)):
+    """
+    Diagnostic endpoint to check LLM API key health.
+    Tests each provider with a minimal request to verify:
+    - API key is valid
+    - Account has quota/credits
+    - Model access is available
+    """
+    import httpx
+    import os
+    
+    results = {
+        "openai": {"status": "unknown", "error": None, "model": None},
+        "gemini": {"status": "unknown", "error": None, "model": None},
+    }
+    
+    # Test OpenAI
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    openai_model = os.getenv("OPENAI_MODEL", "gpt-4o")
+    if openai_key:
+        results["openai"]["model"] = openai_model
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {openai_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": openai_model,
+                        "messages": [{"role": "user", "content": "Hi"}],
+                        "max_tokens": 5,
+                    },
+                )
+                if response.status_code == 200:
+                    results["openai"]["status"] = "healthy"
+                elif response.status_code == 429:
+                    results["openai"]["status"] = "rate_limited"
+                    results["openai"]["error"] = "Quota exceeded or rate limited - check billing"
+                elif response.status_code == 401:
+                    results["openai"]["status"] = "invalid_key"
+                    results["openai"]["error"] = "Invalid API key"
+                elif response.status_code == 404:
+                    results["openai"]["status"] = "model_not_found"
+                    results["openai"]["error"] = f"Model {openai_model} not available on this account"
+                else:
+                    results["openai"]["status"] = "error"
+                    results["openai"]["error"] = f"HTTP {response.status_code}: {response.text[:200]}"
+        except Exception as e:
+            results["openai"]["status"] = "error"
+            results["openai"]["error"] = str(e)
+    else:
+        results["openai"]["status"] = "not_configured"
+        results["openai"]["error"] = "OPENAI_API_KEY not set"
+    
+    # Test Gemini
+    google_key = os.getenv("GOOGLE_API_KEY", "")
+    google_model = os.getenv("GOOGLE_MODEL", "gemini-2.0-flash")
+    if google_key:
+        results["gemini"]["model"] = google_model
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{google_model}:generateContent?key={google_key}",
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "contents": [{"parts": [{"text": "Hi"}]}],
+                        "generationConfig": {"maxOutputTokens": 5}
+                    },
+                )
+                if response.status_code == 200:
+                    results["gemini"]["status"] = "healthy"
+                elif response.status_code == 429:
+                    results["gemini"]["status"] = "rate_limited"
+                    results["gemini"]["error"] = "Quota exceeded - check Google Cloud quotas"
+                elif response.status_code == 400:
+                    error_detail = response.json().get("error", {}).get("message", "")
+                    results["gemini"]["status"] = "error"
+                    results["gemini"]["error"] = error_detail[:200]
+                elif response.status_code == 403:
+                    results["gemini"]["status"] = "permission_denied"
+                    results["gemini"]["error"] = "API key doesn't have access to this model"
+                else:
+                    results["gemini"]["status"] = "error"
+                    results["gemini"]["error"] = f"HTTP {response.status_code}: {response.text[:200]}"
+        except Exception as e:
+            results["gemini"]["status"] = "error"
+            results["gemini"]["error"] = str(e)
+    else:
+        results["gemini"]["status"] = "not_configured"
+        results["gemini"]["error"] = "GOOGLE_API_KEY not set"
+    
+    # Overall health
+    healthy_count = sum(1 for r in results.values() if r["status"] == "healthy")
+    overall = "healthy" if healthy_count > 0 else "unhealthy"
+    
+    return {
+        "overall": overall,
+        "providers": results,
+        "recommendation": (
+            "All providers are working" if healthy_count == 2 else
+            "Check billing/quota for rate-limited providers" if any(r["status"] == "rate_limited" for r in results.values()) else
+            "Configure at least one LLM provider"
+        )
+    }
+
 # Shared Telegram phone service instance (per process) so that the same
 # Telethon client can handle both send_code_request and sign_in for a phone.
 # Using lazy initialization to allow app to start without Telegram credentials
