@@ -88,12 +88,18 @@ async def get_telegram_bot_token(license_id: int) -> Optional[str]:
     This returns the unmasked token - only use within backend code, never expose to API.
     """
     async with get_db() as db:
+        # Don't filter by is_active in SQL - check in Python to avoid boolean issues
         config = await fetch_one(
             db,
-            "SELECT bot_token FROM telegram_configs WHERE license_key_id = ? AND is_active = TRUE",
+            "SELECT bot_token, is_active FROM telegram_configs WHERE license_key_id = ?",
             [license_id],
         )
-        return config["bot_token"] if config else None
+        if config and config.get("bot_token"):
+            # Check is_active - handle both boolean and int representations
+            is_active = config.get("is_active")
+            if is_active in (True, 1, "1", "true", "TRUE"):
+                return config["bot_token"]
+        return None
 
 
 # ============ Telegram Phone Sessions Functions ============
