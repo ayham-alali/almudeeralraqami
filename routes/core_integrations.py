@@ -839,8 +839,8 @@ async def configure_telegram(
         auto_reply=config.auto_reply_enabled
     )
     
-    # Set webhook
-    base_url = str(request.base_url).rstrip('/')
+    # Set webhook - force HTTPS since Railway terminates SSL at load balancer
+    base_url = str(request.base_url).rstrip('/').replace('http://', 'https://')
     webhook_url = f"{base_url}/api/integrations/telegram/webhook/{license['license_id']}"
     
     webhook_success = False
@@ -879,7 +879,8 @@ async def set_telegram_webhook(
     
     telegram_service = TelegramService(bot_token)
     
-    base_url = str(request.base_url).rstrip('/')
+    # Force HTTPS since Railway terminates SSL at load balancer
+    base_url = str(request.base_url).rstrip('/').replace('http://', 'https://')
     webhook_url = f"{base_url}/api/integrations/telegram/webhook/{license['license_id']}"
     
     try:
