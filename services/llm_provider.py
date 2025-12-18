@@ -51,11 +51,12 @@ class LLMConfig:
     cache_max_size: int = 1000
     
     # Concurrency control - CRITICAL for preventing rate limits
-    # Default to 3 concurrent requests
-    max_concurrent_requests: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_CONCURRENT", "3")))
+    # Default to 1 for free tier API to avoid rate limits
+    max_concurrent_requests: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_CONCURRENT", "1")))
     
     # Post-request delay in seconds - adds breathing room between requests
-    post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "0.5")))
+    # Gemini free tier: ~15 requests/minute = 4 seconds between requests recommended
+    post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "3.0")))
 
 
 # ============ Global Concurrency Control ============
