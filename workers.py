@@ -245,6 +245,10 @@ class MessagePoller:
                 oauth_service
             )
             
+            # Get our own email address to filter out self-messages
+            # This prevents AI from processing emails WE sent
+            our_email_address = config.get("email_address", "").lower()
+            
             # Fetch new emails using Gmail API (last 72 hours)
             # Increased limit to 200 to capture more messages per poll
             emails = await gmail_service.fetch_new_emails(since_hours=72, limit=200)
@@ -255,6 +259,12 @@ class MessagePoller:
             
             # Process each email
             for email_data in emails:
+                # CRITICAL: Skip emails sent BY US to prevent AI loop
+                sender_email = (email_data.get("sender_contact") or "").lower()
+                if our_email_address and sender_email == our_email_address:
+                    logger.debug(f"Skipping self-sent email from {sender_email}")
+                    continue
+                
                 # Check if we already have this message
                 existing = await self._check_existing_message(
                     license_id, "email", email_data.get("channel_message_id")

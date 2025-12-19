@@ -287,7 +287,7 @@ class TelegramPhoneService:
         since_hours: int = 72
     ) -> List[Dict]:
         """
-        Get recent messages from Telegram account
+        Get recent messages from Telegram account (INCOMING only)
         
         Args:
             session_string: Session string
@@ -295,15 +295,23 @@ class TelegramPhoneService:
             since_hours: Only fetch messages from last N hours
         
         Returns:
-            List of message dicts
+            List of message dicts (only incoming messages from other users)
         """
         from datetime import timedelta
+        from logging_config import get_logger
         
+        logger = get_logger(__name__)
         client = None
         messages_data = []
         
         try:
             client = await self.create_client_from_session(session_string)
+            
+            # Get our own user ID to filter out self-messages
+            # This is a safety net in case message.out doesn't work correctly
+            me = await client.get_me()
+            my_user_id = me.id if me else None
+            logger.debug(f"Telegram phone session user ID: {my_user_id}")
             
             # Calculate time threshold
             since_time = datetime.now() - timedelta(hours=since_hours)
@@ -325,14 +333,28 @@ class TelegramPhoneService:
                         dialog.entity,
                         limit=20,  # Get more to filter
                     ):
-                        if not message.text or message.out:  # Skip outgoing messages
+                        # Skip messages without text
+                        if not message.text:
+                            continue
+                        
+                        # CRITICAL: Skip outgoing messages (our own sent messages)
+                        # message.out = True means WE sent this message
+                        if message.out:
+                            logger.debug(f"Skipping outgoing message (message.out=True): {message.id}")
+                            continue
+                        
+                        # SAFETY NET: Also check sender_id matches our user ID
+                        # This catches edge cases where message.out might be incorrect
+                        sender = await message.get_sender()
+                        if sender and my_user_id and sender.id == my_user_id:
+                            logger.debug(f"Skipping self-message (sender_id matches our ID): {message.id}")
                             continue
                         
                         # Skip messages older than since_time
                         if message.date and message.date.replace(tzinfo=None) < since_time:
                             break  # Messages are in reverse chronological order
                         
-                        sender = await message.get_sender()
+                        # sender was already fetched above for the self-message check
                         sender_name = ""
                         sender_contact = ""
                         

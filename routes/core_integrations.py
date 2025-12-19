@@ -1063,7 +1063,7 @@ async def telegram_webhook(
         return {"ok": True}
     
     if parsed["is_bot"]:
-        logger.debug("Ignoring bot message")
+        logger.debug("Ignoring bot message (sender is a bot)")
         return {"ok": True}  # Ignore bot messages
     
     # Only process private messages for now
@@ -1075,6 +1075,13 @@ async def telegram_webhook(
     config = await get_telegram_config(license_id)
     if not config or not config.get("is_active"):
         logger.warning(f"Telegram config not active for license {license_id}")
+        return {"ok": True}
+    
+    # CRITICAL: Check if this message was sent BY our bot (to prevent AI loop)
+    # When the bot sends a message, Telegram sends us a webhook update for it too
+    bot_username = config.get("bot_username")
+    if bot_username and parsed.get("username") == bot_username:
+        logger.debug(f"Skipping self-message from bot @{bot_username}")
         return {"ok": True}
     
     # Save to inbox
@@ -1307,10 +1314,12 @@ async def get_conversation_detail(
     license: dict = Depends(get_license_from_header)
 ):
     """
-    Get all messages from a specific sender (conversation thread view).
-    Shows messages in chronological order (oldest first).
+    Get complete chat history for a conversation (both incoming and outgoing messages).
+    Returns messages in chronological order with direction markers.
     """
-    messages = await get_conversation_messages(
+    from models import get_full_chat_history
+    
+    messages = await get_full_chat_history(
         license_id=license["license_id"],
         sender_contact=sender_contact,
         limit=limit
@@ -1319,8 +1328,9 @@ async def get_conversation_detail(
     if not messages:
         raise HTTPException(status_code=404, detail="المحادثة غير موجودة")
     
-    # Get sender info from first message
-    sender_name = messages[0].get("sender_name", "عميل") if messages else "عميل"
+    # Get sender info from first incoming message
+    incoming_msgs = [m for m in messages if m.get("direction") == "incoming"]
+    sender_name = incoming_msgs[0].get("sender_name", "عميل") if incoming_msgs else "عميل"
     
     return {
         "sender_name": sender_name,
@@ -1360,17 +1370,27 @@ async def approve_message(
     background_tasks: BackgroundTasks,
     license: dict = Depends(get_license_from_header)
 ):
-    """Approve, reject, or edit a draft response"""
+    """Approve or ignore a message/chat"""
+    from models import ignore_chat
+    
     messages = await get_inbox_messages(license["license_id"])
     message = next((m for m in messages if m["id"] == message_id), None)
     if not message:
         raise HTTPException(status_code=404, detail="الرسالة غير موجودة")
     
-    if approval.action == "reject":
-        await update_inbox_status(message_id, "rejected")
-        return {"success": True, "message": "تم رفض الرد"}
+    if approval.action == "ignore":
+        # Ignore entire chat - mark all messages from this sender as ignored
+        sender_contact = message.get("sender_contact") or message.get("sender_id") or ""
+        if sender_contact:
+            count = await ignore_chat(license["license_id"], sender_contact)
+            return {"success": True, "message": f"تم تجاهل المحادثة ({count} رسائل)"}
+        else:
+            # Fallback: just ignore this single message
+            await update_inbox_status(message_id, "ignored")
+            return {"success": True, "message": "تم تجاهل الرسالة"}
     
-    elif approval.action in ["approve", "edit"]:
+    elif approval.action == "approve":
+        # Approve and send - use edited_body if provided, otherwise use AI draft
         response_body = approval.edited_body or message.get("ai_draft_response", "")
         
         if not response_body:

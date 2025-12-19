@@ -441,3 +441,121 @@ async def get_conversation_messages(
         )
         return rows
 
+
+async def ignore_chat(license_id: int, sender_contact: str) -> int:
+    """
+    Mark all messages from a sender as 'ignored' (entire chat).
+    Returns the count of messages updated.
+    """
+    async with get_db() as db:
+        # Update all messages from this sender
+        await execute_sql(
+            db,
+            """
+            UPDATE inbox_messages 
+            SET status = 'ignored'
+            WHERE license_key_id = ?
+            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+            """,
+            [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
+        )
+        
+        # Get count of affected rows
+        row = await fetch_one(
+            db,
+            """
+            SELECT COUNT(*) as count FROM inbox_messages
+            WHERE license_key_id = ?
+            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+            AND status = 'ignored'
+            """,
+            [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
+        )
+        await commit_db(db)
+        return row["count"] if row else 0
+
+
+async def get_full_chat_history(
+    license_id: int,
+    sender_contact: str,
+    limit: int = 100
+) -> List[dict]:
+    """
+    Get complete chat history including both incoming (inbox) and outgoing (outbox) messages.
+    Returns messages sorted by timestamp, each marked with 'direction' field.
+    """
+    async with get_db() as db:
+        # Get incoming messages (from client to us)
+        inbox_rows = await fetch_all(
+            db,
+            """
+            SELECT 
+                id, channel, sender_name, sender_contact, sender_id, 
+                subject, body, 
+                intent, urgency, sentiment, language, dialect,
+                ai_summary, ai_draft_response, status,
+                created_at, received_at
+            FROM inbox_messages
+            WHERE license_key_id = ?
+            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            [license_id, sender_contact, sender_contact, f"%{sender_contact}%", limit]
+        )
+        
+        # Get outgoing messages (from us to client) - sent replies
+        outbox_rows = await fetch_all(
+            db,
+            """
+            SELECT 
+                o.id, o.channel, o.recipient_email as sender_contact, o.recipient_id as sender_id,
+                o.subject, o.body, o.status,
+                o.created_at, o.sent_at,
+                i.sender_name
+            FROM outbox_messages o
+            LEFT JOIN inbox_messages i ON o.inbox_message_id = i.id
+            WHERE o.license_key_id = ?
+            AND (o.recipient_email = ? OR o.recipient_id = ? OR o.recipient_email LIKE ?)
+            AND o.status IN ('sent', 'approved')
+            ORDER BY o.created_at ASC
+            LIMIT ?
+            """,
+            [license_id, sender_contact, sender_contact, f"%{sender_contact}%", limit]
+        )
+        
+        # Convert to list with direction marker
+        messages = []
+        
+        for row in inbox_rows:
+            msg = dict(row)
+            msg["direction"] = "incoming"
+            msg["timestamp"] = msg.get("received_at") or msg.get("created_at")
+            messages.append(msg)
+        
+        for row in outbox_rows:
+            msg = dict(row)
+            msg["direction"] = "outgoing"
+            msg["timestamp"] = msg.get("sent_at") or msg.get("created_at")
+            # Mark outgoing status as descriptive
+            if msg.get("status") == "sent":
+                msg["status"] = "sent"
+            elif msg.get("status") == "approved":
+                msg["status"] = "sending"
+            messages.append(msg)
+        
+        # Sort all messages by timestamp
+        def get_timestamp(m):
+            ts = m.get("timestamp")
+            if ts is None:
+                return ""
+            if isinstance(ts, str):
+                return ts
+            return ts.isoformat() if hasattr(ts, 'isoformat') else str(ts)
+        
+        messages.sort(key=get_timestamp)
+        
+        return messages
+
+
+
