@@ -132,6 +132,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Users table creation note: {e}")
         
+        # Fix customers table serial (PostgreSQL auto-increment)
+        try:
+            from migrations.fix_customers_serial import fix_customers_serial
+            await fix_customers_serial()
+        except Exception as e:
+            logger.warning(f"Customers serial fix note: {e}")
+
+        
         # Ensure language/dialect columns exist in inbox_messages
         try:
             from migrations import ensure_inbox_columns
