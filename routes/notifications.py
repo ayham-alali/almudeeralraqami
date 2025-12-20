@@ -1,11 +1,14 @@
 """
 Al-Mudeer - Notification Routes
 Smart notifications, Slack/Discord integration, notification rules
+Admin broadcast for subscription reminders, team updates, and promotions
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+import os
+from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel, Field
 from typing import Optional, List
+from dotenv import load_dotenv
 
 from services.notification_service import (
     init_notification_tables,
@@ -24,8 +27,103 @@ from services.notification_service import (
     NotificationChannel,
 )
 from dependencies import get_license_from_header
+from models import create_notification
+
+load_dotenv()
 
 router = APIRouter(prefix="/api/notifications", tags=["Notifications"])
+
+# Admin authentication (same pattern as subscription.py)
+ADMIN_KEY = os.getenv("ADMIN_KEY")
+if not ADMIN_KEY:
+    raise ValueError("ADMIN_KEY environment variable is required")
+
+
+async def verify_admin(x_admin_key: str = Header(None, alias="X-Admin-Key")):
+    """Verify admin key"""
+    if not x_admin_key or x_admin_key != ADMIN_KEY:
+        raise HTTPException(status_code=403, detail="غير مصرح - Admin key required")
+
+
+# ============ Admin Broadcast Schemas ============
+
+class AdminBroadcast(BaseModel):
+    """Admin broadcast notification to users"""
+    license_ids: Optional[List[int]] = Field(None, description="List of license IDs to notify, or null for all")
+    title: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1, max_length=1000)
+    notification_type: str = Field(
+        default="team_update",
+        description="subscription_expiring, subscription_expired, team_update, promotion"
+    )
+    link: Optional[str] = Field(None, description="Optional link to navigate to")
+    priority: str = Field(default="normal", description="low, normal, high, urgent")
+
+
+# ============ Admin Broadcast Route ============
+
+@router.post("/admin/broadcast")
+async def broadcast_notification(
+    data: AdminBroadcast,
+    _: None = Depends(verify_admin)
+):
+    """
+    Send notification to all users or specific users.
+    Admin-only endpoint for subscription reminders, team updates, and promotions.
+    """
+    from db_helper import get_db, fetch_all
+    from database import DB_TYPE
+    from logging_config import get_logger
+    
+    logger = get_logger(__name__)
+    
+    try:
+        # Get target license IDs
+        if data.license_ids:
+            license_ids = data.license_ids
+        else:
+            # Get all active license IDs
+            async with get_db() as db:
+                if DB_TYPE == "postgresql":
+                    rows = await fetch_all(db, "SELECT id FROM license_keys WHERE is_active = TRUE", [])
+                else:
+                    rows = await fetch_all(db, "SELECT id FROM license_keys WHERE is_active = 1", [])
+                license_ids = [row["id"] for row in rows]
+        
+        # Validate notification type
+        valid_types = ["subscription_expiring", "subscription_expired", "team_update", "promotion"]
+        if data.notification_type not in valid_types:
+            data.notification_type = "team_update"
+        
+        # Send notification to each license
+        sent_count = 0
+        for license_id in license_ids:
+            try:
+                await create_notification(
+                    license_id=license_id,
+                    notification_type=data.notification_type,
+                    title=data.title,
+                    message=data.message,
+                    priority=data.priority,
+                    link=data.link
+                )
+                sent_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to send notification to license {license_id}: {e}")
+                continue
+        
+        logger.info(f"Admin broadcast sent to {sent_count} users: {data.title}")
+        
+        return {
+            "success": True,
+            "sent_count": sent_count,
+            "total_targets": len(license_ids),
+            "message": f"تم إرسال الإشعار إلى {sent_count} مستخدم"
+        }
+    
+    except Exception as e:
+        logger.error(f"Error broadcasting notification: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="حدث خطأ أثناء إرسال الإشعارات")
 
 
 # ============ Integration Schemas ============
@@ -309,3 +407,101 @@ async def get_discord_guide():
 # Tables will be initialized in main.py lifespan function
 # No automatic initialization on import to avoid database connection issues
 
+
+# ============ Web Push Notification Endpoints ============
+
+class PushSubscription(BaseModel):
+    """Browser push subscription info"""
+    endpoint: str = Field(..., description="Push service endpoint URL")
+    keys: dict = Field(..., description="Keys object with p256dh and auth")
+
+
+@router.get("/push/vapid-key")
+async def get_vapid_public_key():
+    """Get VAPID public key for frontend push subscription."""
+    from services.push_service import get_vapid_public_key
+    
+    public_key = get_vapid_public_key()
+    if not public_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Push notifications not configured. VAPID keys missing."
+        )
+    
+    return {"publicKey": public_key}
+
+
+@router.post("/push/subscribe")
+async def subscribe_push(
+    data: PushSubscription,
+    license: dict = Depends(get_license_from_header)
+):
+    """Subscribe to Web Push notifications."""
+    from services.push_service import save_push_subscription, WEBPUSH_AVAILABLE
+    
+    if not WEBPUSH_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Push notifications not available. pywebpush not installed."
+        )
+    
+    subscription_info = {
+        "endpoint": data.endpoint,
+        "keys": data.keys
+    }
+    
+    subscription_id = await save_push_subscription(
+        license_id=license["license_id"],
+        subscription_info=subscription_info,
+        user_agent=None  # Could extract from request headers
+    )
+    
+    return {
+        "success": True,
+        "subscription_id": subscription_id,
+        "message": "تم تفعيل إشعارات المتصفح بنجاح"
+    }
+
+
+@router.delete("/push/unsubscribe")
+async def unsubscribe_push(
+    data: PushSubscription,
+    license: dict = Depends(get_license_from_header)
+):
+    """Unsubscribe from Web Push notifications."""
+    from services.push_service import remove_push_subscription
+    
+    await remove_push_subscription(data.endpoint)
+    
+    return {
+        "success": True,
+        "message": "تم إلغاء تفعيل إشعارات المتصفح"
+    }
+
+
+@router.post("/push/test")
+async def test_push_notification(
+    license: dict = Depends(get_license_from_header)
+):
+    """Send a test push notification to all subscribed devices."""
+    from services.push_service import send_push_to_license
+    
+    sent_count = await send_push_to_license(
+        license_id=license["license_id"],
+        title="🔔 إشعار تجريبي",
+        message="تم تفعيل إشعارات المتصفح بنجاح!",
+        link="/dashboard",
+        tag="test-notification"
+    )
+    
+    if sent_count == 0:
+        return {
+            "success": False,
+            "message": "لا توجد أجهزة مشتركة في الإشعارات"
+        }
+    
+    return {
+        "success": True,
+        "sent_count": sent_count,
+        "message": f"تم إرسال الإشعار إلى {sent_count} جهاز"
+    }

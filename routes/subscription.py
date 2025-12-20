@@ -38,7 +38,7 @@ class SubscriptionCreate(BaseModel):
     contact_email: Optional[EmailStr] = Field(None, description="البريد الإلكتروني للتواصل")
     contact_phone: Optional[str] = Field(None, description="رقم الهاتف")
     days_valid: int = Field(365, description="مدة الصلاحية بالأيام", ge=1, le=3650)
-    max_requests_per_day: int = Field(1000, description="الحد الأقصى للطلبات اليومية", ge=10, le=100000)
+    max_requests_per_day: int = Field(100, description="الحد الأقصى للطلبات اليومية", ge=10, le=100000)
     notes: Optional[str] = Field(None, description="ملاحظات إضافية", max_length=500)
 
 

@@ -289,6 +289,21 @@ async def init_customers_and_analytics():
             )
         """)
 
+        # Push Subscriptions (Web Push notifications for browsers/devices)
+        await execute_sql(db, f"""
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                id {ID_PK},
+                license_key_id INTEGER NOT NULL,
+                endpoint TEXT NOT NULL UNIQUE,
+                subscription_info TEXT NOT NULL,
+                user_agent TEXT,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at {TIMESTAMP_NOW},
+                updated_at TIMESTAMP,
+                FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
+            )
+        """)
+
         # Customer Profiles
         await execute_sql(db, f"""
             CREATE TABLE IF NOT EXISTS customers (

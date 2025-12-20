@@ -773,3 +773,98 @@ def get_worker_status() -> Dict[str, Dict[str, Optional[str]]]:
             "status": status,
         },
     }
+
+
+# ============ Subscription Reminder Worker ============
+
+_subscription_reminder_task: Optional[asyncio.Task] = None
+
+
+async def check_subscription_reminders():
+    """
+    Check for subscriptions expiring in 3 days and send notifications.
+    Runs once per day.
+    """
+    from models import create_notification
+    
+    try:
+        async with get_db() as db:
+            # Find subscriptions expiring in exactly 3 days
+            if DB_TYPE == "postgresql":
+                # PostgreSQL: use CURRENT_DATE + INTERVAL
+                rows = await fetch_all(
+                    db,
+                    """
+                    SELECT id, company_name, expires_at, contact_email
+                    FROM license_keys 
+                    WHERE is_active = TRUE 
+                    AND DATE(expires_at) = CURRENT_DATE + INTERVAL '3 days'
+                    """,
+                    []
+                )
+            else:
+                # SQLite: use date arithmetic
+                rows = await fetch_all(
+                    db,
+                    """
+                    SELECT id, company_name, expires_at, contact_email
+                    FROM license_keys 
+                    WHERE is_active = 1 
+                    AND DATE(expires_at) = DATE('now', '+3 days')
+                    """,
+                    []
+                )
+            
+            if not rows:
+                logger.info("No subscriptions expiring in 3 days")
+                return
+            
+            # Send reminder notifications
+            for row in rows:
+                license_id = row["id"]
+                company_name = row.get("company_name", "Unknown")
+                
+                try:
+                    await create_notification(
+                        license_id=license_id,
+                        notification_type="subscription_expiring",
+                        title="⚠️ اشتراكك ينتهي قريباً",
+                        message=f"اشتراكك في المدير ينتهي خلال 3 أيام. يرجى تجديد الاشتراك لضمان استمرار الخدمة.",
+                        priority="high",
+                        link="/dashboard/settings"
+                    )
+                    logger.info(f"Sent subscription reminder to license {license_id} ({company_name})")
+                except Exception as e:
+                    logger.warning(f"Failed to send reminder to license {license_id}: {e}")
+                    
+    except Exception as e:
+        logger.error(f"Error checking subscription reminders: {e}", exc_info=True)
+
+
+async def _subscription_reminder_loop():
+    """Background loop that runs once per day to check subscription reminders."""
+    while True:
+        try:
+            await check_subscription_reminders()
+        except Exception as e:
+            logger.error(f"Error in subscription reminder loop: {e}", exc_info=True)
+        
+        # Wait 24 hours before next check
+        await asyncio.sleep(24 * 60 * 60)
+
+
+async def start_subscription_reminders():
+    """Start the subscription reminder background task."""
+    global _subscription_reminder_task
+    if _subscription_reminder_task is None:
+        _subscription_reminder_task = asyncio.create_task(_subscription_reminder_loop())
+        logger.info("Started subscription reminder worker")
+
+
+async def stop_subscription_reminders():
+    """Stop the subscription reminder background task."""
+    global _subscription_reminder_task
+    if _subscription_reminder_task:
+        _subscription_reminder_task.cancel()
+        _subscription_reminder_task = None
+        logger.info("Stopped subscription reminder worker")

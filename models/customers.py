@@ -613,7 +613,7 @@ async def create_notification(
     priority: str = "normal",
     link: str = None
 ) -> int:
-    """Create a new notification"""
+    """Create a new notification and send Web Push if subscribers exist."""
     async with get_db() as db:
         await execute_sql(
             db,
@@ -635,7 +635,27 @@ async def create_notification(
             [license_id],
         )
         await commit_db(db)
-        return row["id"] if row else 0
+        notification_id = row["id"] if row else 0
+    
+    # Send Web Push notification in background (non-blocking)
+    try:
+        from services.push_service import send_push_to_license, WEBPUSH_AVAILABLE
+        if WEBPUSH_AVAILABLE:
+            import asyncio
+            asyncio.create_task(
+                send_push_to_license(
+                    license_id=license_id,
+                    title=title,
+                    message=message,
+                    link=link,
+                    tag=f"notification-{notification_id}",
+                    priority=priority
+                )
+            )
+    except Exception:
+        pass  # Web Push is optional, don't fail if it errors
+    
+    return notification_id
 
 
 async def get_notifications(license_id: int, unread_only: bool = False, limit: int = 50) -> List[dict]:
