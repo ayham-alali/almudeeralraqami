@@ -330,7 +330,9 @@ async def get_inbox_conversations(
     where_clauses = ["license_key_id = ?"]
     params = [license_id]
     
-    if status:
+    if status == 'sent':
+        where_clauses.append("status IN ('approved', 'sent', 'auto_replied')")
+    elif status:
         where_clauses.append("status = ?")
         params.append(status)
     
@@ -411,7 +413,9 @@ async def get_inbox_conversations_count(
     where_clauses = ["license_key_id = ?"]
     params = [license_id]
     
-    if status:
+    if status == 'sent':
+        where_clauses.append("status IN ('approved', 'sent', 'auto_replied')")
+    elif status:
         where_clauses.append("status = ?")
         params.append(status)
     
