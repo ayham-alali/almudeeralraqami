@@ -479,22 +479,69 @@ async def draft_node(state: AgentState) -> AgentState:
     # Build conversation history context
     history_block = ""
     if state.get("conversation_history"):
-        history_block = f"\nسياق المحادثة السابقة مع هذا العميل:\n{state['conversation_history']}\n"
+        history_block = f"\nPrevious conversation context:\n{state['conversation_history']}\n"
     
-    # Build dialect instructions based on detected dialect
-    dialect_instruction = ""
-    if dialect and dialect != "فصحى":
-        dialect_examples = {
-            "سعودي": "استخدم اللهجة السعودية/الخليجية في الرد. مثال: 'وش تحتاج؟'، 'تمام'، 'إن شاء الله'، 'يعطيك العافية'، 'كيف أقدر أساعدك؟'",
-            "خليجي": "استخدم اللهجة الخليجية في الرد. مثال: 'شلونك؟'، 'زين'، 'واجد'، 'يا هلا'، 'كيف أقدر أخدمك؟'",
-            "مصري": "استخدم اللهجة المصرية في الرد. مثال: 'إزيك؟'، 'تمام'، 'عايز إيه؟'، 'أقدر أساعدك إزاي؟'، 'الحقيقة'",
-            "شامي": "استخدم اللهجة الشامية في الرد. مثال: 'كيفك؟'، 'شو بدك؟'، 'منيح'، 'هلق'، 'كتير منيح'",
-            "سوري": "استخدم اللهجة السورية في الرد. مثال: 'شو بدك؟'، 'كيفك؟'، 'منيح'، 'هلق'، 'ليك'",
+    # Get detected language
+    language = state.get("language", "ar")
+    
+    # Build language and dialect instructions
+    if language and language != "ar":
+        # Non-Arabic language - respond in same language
+        language_names = {
+            "en": "English",
+            "fr": "French", 
+            "es": "Spanish",
+            "de": "German",
+            "tr": "Turkish",
         }
-        dialect_instruction = dialect_examples.get(dialect, f"استخدم لهجة {dialect} في الرد إن أمكن.")
+        lang_name = language_names.get(language, language.upper())
+        
+        prompt = f"""You are a friendly, professional customer service representative. You speak naturally like a real person, not a robot.
 
-    # Create a more human, conversational prompt
-    prompt = f"""أنت ممثل خدمة عملاء ودود وطبيعي. تتحدث مع العملاء كإنسان حقيقي، لست روبوتاً.
+🎯 Your task: Write a natural, direct response to the customer's message.
+
+🗣️ IMPORTANT: Respond in {lang_name} (the same language as the customer)!
+
+✅ Do:
+- Be friendly, direct, and natural
+- Answer what the customer asked/requested directly
+- Use simple, clear language
+- You can use one or two emojis if appropriate 😊
+{"- Be very concise (2-3 lines only)" if is_casual else "- Keep the response appropriate to the message length (4-6 lines)"}
+
+❌ Don't:
+- Don't use overly formal phrases like "Dear Sir/Madam"
+- Don't say "Your message has been received" (boring and robotic)
+- Don't end with "Customer Service Team" (too formal)
+- Don't repeat the same routine phrases
+- Don't say "I am an AI" or "I cannot" - just respond naturally
+
+📝 Customer's message:
+\"{raw_message}\"
+
+📊 Message analysis:
+- Type: {intent}
+- Language: {lang_name}
+- Key points: {', '.join(key_points) if key_points else 'General message'}
+{f"- Customer name: {sender}" if sender else ""}
+{history_block}
+
+✍️ Write your response directly in {lang_name} (no explanation):"""
+
+    else:
+        # Arabic - handle dialects
+        dialect_instruction = ""
+        if dialect and dialect != "فصحى":
+            dialect_examples = {
+                "سعودي": "استخدم اللهجة السعودية/الخليجية في الرد. مثال: 'وش تحتاج؟'، 'تمام'، 'إن شاء الله'، 'يعطيك العافية'، 'كيف أقدر أساعدك؟'",
+                "خليجي": "استخدم اللهجة الخليجية في الرد. مثال: 'شلونك؟'، 'زين'، 'واجد'، 'يا هلا'، 'كيف أقدر أخدمك؟'",
+                "مصري": "استخدم اللهجة المصرية في الرد. مثال: 'إزيك؟'، 'تمام'، 'عايز إيه؟'، 'أقدر أساعدك إزاي؟'، 'الحقيقة'",
+                "شامي": "استخدم اللهجة الشامية في الرد. مثال: 'كيفك؟'، 'شو بدك؟'، 'منيح'، 'هلق'، 'كتير منيح'",
+                "سوري": "استخدم اللهجة السورية في الرد. مثال: 'شو بدك؟'، 'كيفك؟'، 'منيح'، 'هلق'، 'ليك'",
+            }
+            dialect_instruction = dialect_examples.get(dialect, f"استخدم لهجة {dialect} في الرد إن أمكن.")
+
+        prompt = f"""أنت ممثل خدمة عملاء ودود وطبيعي. تتحدث مع العملاء كإنسان حقيقي، لست روبوتاً.
 
 🎯 مهمتك: اكتب رداً طبيعياً ومباشراً على رسالة العميل.
 

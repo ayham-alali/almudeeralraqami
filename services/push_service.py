@@ -5,19 +5,62 @@ Handles VAPID keys and sending push notifications to subscribed browsers/devices
 
 import os
 import json
+import base64
 from typing import Optional, List
 from logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# VAPID keys for Web Push (generate once and store in environment)
+# VAPID keys for Web Push
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY")
 VAPID_CLAIMS_EMAIL = os.getenv("VAPID_CLAIMS_EMAIL", "mailto:admin@almudeer.com")
 
-# Handle VAPID_PRIVATE_KEY - convert escaped newlines and handle PEM format
+# Handle VAPID_PRIVATE_KEY - can be PEM format or raw base64url
 _raw_private_key = os.getenv("VAPID_PRIVATE_KEY", "")
-# Convert literal \n to actual newlines if stored escaped in env
-VAPID_PRIVATE_KEY = _raw_private_key.replace("\\n", "\n") if _raw_private_key else None
+
+def _prepare_private_key(key_str: str) -> Optional[str]:
+    """
+    Prepare the private key for pywebpush.
+    Handles both PEM format and raw base64url format.
+    """
+    if not key_str:
+        return None
+    
+    # Convert escaped newlines to real newlines
+    key_str = key_str.replace("\\n", "\n").strip()
+    
+    # Check if it's PEM format
+    if key_str.startswith("-----BEGIN"):
+        try:
+            # Parse the PEM and extract raw private key bytes
+            from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.backends import default_backend
+            
+            # Load the PEM key
+            private_key = serialization.load_pem_private_key(
+                key_str.encode('utf-8'),
+                password=None,
+                backend=default_backend()
+            )
+            
+            # Extract the raw private key value (d value for EC key)
+            private_numbers = private_key.private_numbers()
+            # Convert to bytes (32 bytes for P-256)
+            d_bytes = private_numbers.private_value.to_bytes(32, byteorder='big')
+            # Base64url encode without padding
+            raw_key = base64.urlsafe_b64encode(d_bytes).decode('utf-8').rstrip('=')
+            
+            logger.info("Successfully converted PEM private key to raw format")
+            return raw_key
+        except Exception as e:
+            logger.error(f"Failed to parse PEM private key: {e}")
+            return None
+    else:
+        # Already raw base64url format
+        return key_str
+
+# Prepare the private key once at module load
+VAPID_PRIVATE_KEY = _prepare_private_key(_raw_private_key)
 
 # Check if pywebpush is available
 try:
@@ -35,7 +78,7 @@ def get_vapid_public_key() -> Optional[str]:
 
 def generate_vapid_keys() -> dict:
     """
-    Generate new VAPID keys. Run this once and add to environment variables.
+    Generate new VAPID keys in the correct format for pywebpush.
     
     Usage:
         python -c "from services.push_service import generate_vapid_keys; print(generate_vapid_keys())"
@@ -43,26 +86,29 @@ def generate_vapid_keys() -> dict:
     if not WEBPUSH_AVAILABLE:
         return {"error": "pywebpush not installed"}
     
-    from py_vapid import Vapid
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import serialization
     
-    vapid = Vapid()
-    vapid.generate_keys()
+    # Generate EC key pair (P-256 curve)
+    key = ec.generate_private_key(ec.SECP256R1(), default_backend())
     
-    private_key = vapid.private_key.private_bytes(
-        encoding=__import__('cryptography.hazmat.primitives.serialization', fromlist=['Encoding']).Encoding.PEM,
-        format=__import__('cryptography.hazmat.primitives.serialization', fromlist=['PrivateFormat']).PrivateFormat.PKCS8,
-        encryption_algorithm=__import__('cryptography.hazmat.primitives.serialization', fromlist=['NoEncryption']).NoEncryption()
-    ).decode('utf-8')
+    # Get public key in uncompressed point format (X9.62), then base64url encode
+    pub_raw = key.public_key().public_bytes(
+        serialization.Encoding.X962,
+        serialization.PublicFormat.UncompressedPoint
+    )
+    public_key = base64.urlsafe_b64encode(pub_raw).decode().rstrip('=')
     
-    public_key = vapid.public_key.public_bytes(
-        encoding=__import__('cryptography.hazmat.primitives.serialization', fromlist=['Encoding']).Encoding.PEM,
-        format=__import__('cryptography.hazmat.primitives.serialization', fromlist=['PublicFormat']).PublicFormat.SubjectPublicKeyInfo
-    ).decode('utf-8')
+    # Get private key as raw bytes (the 'd' value)
+    private_numbers = key.private_numbers()
+    d_bytes = private_numbers.private_value.to_bytes(32, byteorder='big')
+    private_key = base64.urlsafe_b64encode(d_bytes).decode().rstrip('=')
     
     return {
         "private_key": private_key,
         "public_key": public_key,
-        "instructions": "Add these to your .env file as VAPID_PRIVATE_KEY and VAPID_PUBLIC_KEY"
+        "instructions": "Add these to Railway as VAPID_PRIVATE_KEY and VAPID_PUBLIC_KEY"
     }
 
 

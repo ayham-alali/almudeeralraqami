@@ -316,17 +316,8 @@ async def enhanced_draft_node(state: EnhancedAgentState) -> EnhancedAgentState:
         except Exception:
             pass
     
-    # Build dialect instructions based on detected dialect
-    dialect_instruction = ""
-    if dialect and dialect != "فصحى":
-        dialect_examples = {
-            "سعودي": "استخدم اللهجة السعودية/الخليجية في الرد. مثال: 'وش تحتاج؟'، 'تمام'، 'إن شاء الله'، 'يعطيك العافية'، 'كيف أقدر أساعدك؟'",
-            "خليجي": "استخدم اللهجة الخليجية في الرد. مثال: 'شلونك؟'، 'زين'، 'واجد'، 'يا هلا'، 'كيف أقدر أخدمك؟'",
-            "مصري": "استخدم اللهجة المصرية في الرد. مثال: 'إزيك؟'، 'تمام'، 'عايز إيه؟'، 'أقدر أساعدك إزاي؟'، 'الحقيقة'",
-            "شامي": "استخدم اللهجة الشامية في الرد. مثال: 'كيفك؟'، 'شو بدك؟'، 'منيح'، 'هلق'، 'كتير منيح'",
-            "سوري": "استخدم اللهجة السورية في الرد. مثال: 'شو بدك؟'، 'كيفك؟'، 'منيح'، 'هلق'، 'ليك'",
-        }
-        dialect_instruction = dialect_examples.get(dialect, f"استخدم لهجة {dialect} في الرد إن أمكن.")
+    # Get detected language
+    language = state.get("language", "ar")
     
     # Get dynamic temperature
     temperature = get_dynamic_temperature(
@@ -339,18 +330,62 @@ async def enhanced_draft_node(state: EnhancedAgentState) -> EnhancedAgentState:
     # Customer relationship context
     relationship_context = ""
     if state.get("relationship_level") == "vip":
-        relationship_context = "\nهذا عميل VIP مميز - أظهر تقديراً خاصاً له."
+        relationship_context = "\nThis is a VIP customer - show special appreciation."
     elif state.get("relationship_level") == "returning":
-        relationship_context = "\nهذا عميل عائد - يمكنك الإشارة لأنك تعرفه."
+        relationship_context = "\nThis is a returning customer - you can acknowledge that."
     
-    # Anti-robotic instructions
-    anti_robotic = f"""
+    # Build language-specific prompt
+    if language and language != "ar":
+        # Non-Arabic language - respond in same language
+        language_names = {
+            "en": "English",
+            "fr": "French", 
+            "es": "Spanish",
+            "de": "German",
+            "tr": "Turkish",
+        }
+        lang_name = language_names.get(language, language.upper())
+        
+        prompt = f"""{few_shot}
+
+🗣️ IMPORTANT: Respond in {lang_name} (same language as customer)!
+
+Write a response to the customer ({sender}) based on:
+- Message type: {intent}
+- Sentiment: {sentiment}
+- Language: {lang_name}
+- Key points: {', '.join(key_points) or 'Not specified'}
+{relationship_context}
+{style_instructions}
+
+Customer's message:
+{state['raw_message']}
+
+⚠️ Very important: Match the customer's language! Respond in {lang_name}.
+
+Write only the response in {lang_name} (3-6 lines), no explanation:"""
+
+    else:
+        # Arabic - handle dialects
+        dialect_instruction = ""
+        if dialect and dialect != "فصحى":
+            dialect_examples = {
+                "سعودي": "استخدم اللهجة السعودية/الخليجية في الرد. مثال: 'وش تحتاج؟'، 'تمام'، 'إن شاء الله'، 'يعطيك العافية'، 'كيف أقدر أساعدك؟'",
+                "خليجي": "استخدم اللهجة الخليجية في الرد. مثال: 'شلونك؟'، 'زين'، 'واجد'، 'يا هلا'، 'كيف أقدر أخدمك؟'",
+                "مصري": "استخدم اللهجة المصرية في الرد. مثال: 'إزيك؟'، 'تمام'، 'عايز إيه؟'، 'أقدر أساعدك إزاي؟'، 'الحقيقة'",
+                "شامي": "استخدم اللهجة الشامية في الرد. مثال: 'كيفك؟'، 'شو بدك؟'، 'منيح'، 'هلق'، 'كتير منيح'",
+                "سوري": "استخدم اللهجة السورية في الرد. مثال: 'شو بدك؟'، 'كيفك؟'، 'منيح'، 'هلق'، 'ليك'",
+            }
+            dialect_instruction = dialect_examples.get(dialect, f"استخدم لهجة {dialect} في الرد إن أمكن.")
+        
+        # Anti-robotic instructions
+        anti_robotic = f"""
 تجنب هذه العبارات النمطية:
 {', '.join(ROBOTIC_PHRASES[:5])}
 
 بدلاً منها، استخدم لغة طبيعية وعفوية."""
-    
-    prompt = f"""{few_shot}
+        
+        prompt = f"""{few_shot}
 
 🗣️ اللهجة المطلوبة: {dialect}
 {dialect_instruction if dialect_instruction else "استخدم عربية فصحى مبسّطة وسهلة الفهم."}
