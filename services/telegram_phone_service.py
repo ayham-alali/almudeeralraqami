@@ -411,17 +411,36 @@ class TelegramPhoneService:
         Returns:
             Dict with sent message info
         """
+        from logging_config import get_logger
+        logger = get_logger(__name__)
+        
         client = None
         try:
             client = await self.create_client_from_session(session_string)
             
+            # CRITICAL: Fetch dialogs first to populate the entity cache
+            # This allows get_entity to resolve user IDs that the session has chatted with
+            logger.debug(f"Fetching dialogs to populate entity cache before sending to {recipient_id}")
+            await client.get_dialogs(limit=100)
+            
             # Try to parse as int (chat ID) or use as username
+            entity = None
             try:
                 chat_id = int(recipient_id)
                 entity = await client.get_entity(chat_id)
-            except (ValueError, Exception):
-                # Try as username
-                entity = await client.get_entity(recipient_id)
+            except (ValueError, TypeError):
+                # Not a valid integer, try as username
+                pass
+            except Exception as e:
+                logger.warning(f"Failed to get entity by ID {recipient_id}: {e}")
+            
+            # If ID lookup failed, try as username/phone
+            if entity is None:
+                try:
+                    entity = await client.get_entity(recipient_id)
+                except Exception as e:
+                    logger.error(f"Failed to get entity by username/phone {recipient_id}: {e}")
+                    raise ValueError(f"Cannot find any entity corresponding to '{recipient_id}'")
             
             sent_message = await client.send_message(
                 entity,
