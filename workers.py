@@ -669,22 +669,45 @@ class MessagePoller:
                     logger.info(f"Sent email reply for outbox {outbox_id}")
             
             elif channel == "telegram":
-                # Get bot_token directly from database
-                async with get_db() as db:
-                    row = await fetch_one(
-                        db,
-                        "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
-                        [license_id],
-                    )
-                    if row and row.get("bot_token"):
-                        telegram_service = TelegramService(row["bot_token"])
-                        await telegram_service.send_message(
-                            chat_id=message["recipient_id"],
-                            text=message["body"]
+                # First, try Telegram Phone (MTProto) if we have a phone session
+                session_string = await get_telegram_phone_session_data(license_id)
+                sent = False
+                
+                if session_string:
+                    try:
+                        phone_service = TelegramPhoneService()
+                        # Use sender_id as recipient since that's the chat/user we're replying to
+                        recipient = message.get("recipient_id") or message.get("sender_id")
+                        if recipient:
+                            await phone_service.send_message(
+                                session_string=session_string,
+                                recipient_id=str(recipient),
+                                text=message["body"]
+                            )
+                            await mark_outbox_sent(outbox_id)
+                            logger.info(f"Sent Telegram phone reply for outbox {outbox_id}")
+                            sent = True
+                    except Exception as e:
+                        logger.warning(f"Failed to send via Telegram phone for outbox {outbox_id}: {e}")
+                
+                # Fall back to Bot API if phone session didn't work or doesn't exist
+                if not sent:
+                    async with get_db() as db:
+                        row = await fetch_one(
+                            db,
+                            "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
+                            [license_id],
                         )
-                        
-                        await mark_outbox_sent(outbox_id)
-                        logger.info(f"Sent Telegram reply for outbox {outbox_id}")
+                        if row and row.get("bot_token"):
+                            telegram_service = TelegramService(row["bot_token"])
+                            await telegram_service.send_message(
+                                chat_id=message["recipient_id"],
+                                text=message["body"]
+                            )
+                            
+                            await mark_outbox_sent(outbox_id)
+                            logger.info(f"Sent Telegram bot reply for outbox {outbox_id}")
+
             
             elif channel == "whatsapp":
                 config = await get_whatsapp_config(license_id)

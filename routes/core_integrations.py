@@ -1528,21 +1528,42 @@ async def send_approved_message(outbox_id: int, license_id: int):
                 await mark_outbox_sent(outbox_id)
         
         elif message["channel"] == "telegram":
-            # Send via Telegram - need to query bot_token directly
-            from db_helper import get_db, fetch_one
-            async with get_db() as db:
-                row = await fetch_one(
-                    db,
-                    "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
-                    [license_id],
-                )
-                if row and row.get("bot_token"):
-                    telegram_service = TelegramService(row["bot_token"])
-                    await telegram_service.send_message(
-                        chat_id=message["recipient_id"],
-                        text=message["body"]
+            # First, try Telegram Phone (MTProto) if we have a phone session
+            session_string = await get_telegram_phone_session_data(license_id)
+            sent = False
+            
+            if session_string:
+                try:
+                    phone_service = get_telegram_phone_service()
+                    # Use recipient_id or sender_id as the chat we're replying to
+                    recipient = message.get("recipient_id") or message.get("sender_id")
+                    if recipient:
+                        await phone_service.send_message(
+                            session_string=session_string,
+                            recipient_id=str(recipient),
+                            text=message["body"]
+                        )
+                        await mark_outbox_sent(outbox_id)
+                        sent = True
+                except Exception as e:
+                    print(f"Failed to send via Telegram phone for outbox {outbox_id}: {e}")
+            
+            # Fall back to Bot API if phone session didn't work or doesn't exist
+            if not sent:
+                from db_helper import get_db, fetch_one
+                async with get_db() as db:
+                    row = await fetch_one(
+                        db,
+                        "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
+                        [license_id],
                     )
-                    await mark_outbox_sent(outbox_id)
+                    if row and row.get("bot_token"):
+                        telegram_service = TelegramService(row["bot_token"])
+                        await telegram_service.send_message(
+                            chat_id=message["recipient_id"],
+                            text=message["body"]
+                        )
+                        await mark_outbox_sent(outbox_id)
     
     except Exception as e:
         print(f"Error sending message {outbox_id}: {e}")

@@ -35,11 +35,9 @@ async def verify_admin(x_admin_key: str = Header(None, alias="X-Admin-Key")):
 class SubscriptionCreate(BaseModel):
     """Request to create a new subscription"""
     company_name: str = Field(..., description="اسم الشركة", min_length=2, max_length=200)
-    contact_email: Optional[EmailStr] = Field(None, description="البريد الإلكتروني للتواصل")
     contact_phone: Optional[str] = Field(None, description="رقم الهاتف")
     days_valid: int = Field(365, description="مدة الصلاحية بالأيام", ge=1, le=3650)
-    max_requests_per_day: int = Field(100, description="الحد الأقصى للطلبات اليومية", ge=10, le=100000)
-    notes: Optional[str] = Field(None, description="ملاحظات إضافية", max_length=500)
+    max_requests_per_day: int = Field(50, description="الحد الأقصى للطلبات اليومية")
 
 
 class SubscriptionResponse(BaseModel):
@@ -88,7 +86,6 @@ async def create_subscription(
         # Generate the subscription key
         key = await generate_license_key(
             company_name=subscription.company_name,
-            contact_email=subscription.contact_email,
             days_valid=subscription.days_valid,
             max_requests=subscription.max_requests_per_day
         )

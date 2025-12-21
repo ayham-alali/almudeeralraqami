@@ -465,15 +465,19 @@ async def update_daily_analytics(
 
 async def get_analytics_summary(license_id: int, days: int = 30) -> dict:
     """
-    Get analytics summary for dashboard.
+    Get analytics summary for dashboard with period-over-period trends.
 
     Uses the unified db_helper layer so it works with both SQLite and PostgreSQL.
+    Returns current period metrics plus trend percentages compared to previous period.
     """
-    # Calculate cutoff date as a real date object.
-    cutoff_date = datetime.utcnow().date() - timedelta(days=days)
+    # Calculate date ranges
+    current_end = datetime.utcnow().date()
+    current_start = current_end - timedelta(days=days)
+    previous_start = current_start - timedelta(days=days)
 
     async with get_db() as db:
-        row = await fetch_one(
+        # Current period data
+        current_row = await fetch_one(
             db,
             """
             SELECT 
@@ -488,22 +492,71 @@ async def get_analytics_summary(license_id: int, days: int = 30) -> dict:
             WHERE license_key_id = ?
               AND date >= ?
             """,
-            [license_id, cutoff_date],
+            [license_id, current_start],
+        )
+        
+        # Previous period data (for trend calculation)
+        previous_row = await fetch_one(
+            db,
+            """
+            SELECT 
+                SUM(messages_received) as total_received,
+                SUM(messages_replied) as total_replied,
+                SUM(auto_replies) as total_auto,
+                SUM(time_saved_seconds) as time_saved
+            FROM analytics 
+            WHERE license_key_id = ?
+              AND date >= ?
+              AND date < ?
+            """,
+            [license_id, previous_start, current_start],
         )
 
-    if row:
-        data = row
+    def calc_trend(current: float, previous: float) -> int:
+        """Calculate percentage change between periods."""
+        if previous == 0:
+            return 0  # No previous data, no trend to show
+        change = ((current - previous) / previous) * 100
+        return round(change)
+
+    if current_row:
+        data = current_row
         total_sentiment = (data.get("positive") or 0) + (data.get("negative") or 0) + (data.get("neutral") or 0)
+        
+        # Current values
+        total_messages = data.get("total_received") or 0
+        total_replied = data.get("total_replied") or 0
+        auto_replies = data.get("total_auto") or 0
+        time_saved_hours = round((data.get("time_saved") or 0) / 3600, 1)
+        
+        # Calculate response rates
+        current_response_rate = round(total_replied / max(total_messages, 1) * 100)
+        
+        # Previous values for trends
+        prev = previous_row or {}
+        prev_messages = prev.get("total_received") or 0
+        prev_replied = prev.get("total_replied") or 0
+        prev_auto = prev.get("total_auto") or 0
+        prev_time_saved = round((prev.get("time_saved") or 0) / 3600, 1)
+        prev_response_rate = round(prev_replied / max(prev_messages, 1) * 100) if prev_messages > 0 else 0
 
         return {
-            "total_messages": data.get("total_received") or 0,
-            "total_replied": data.get("total_replied") or 0,
-            "auto_replies": data.get("total_auto") or 0,
-            "time_saved_hours": round((data.get("time_saved") or 0) / 3600, 1),
+            # Current period values
+            "total_messages": total_messages,
+            "total_replied": total_replied,
+            "auto_replies": auto_replies,
+            "time_saved_hours": time_saved_hours,
             "satisfaction_rate": round((data.get("positive") or 0) / max(total_sentiment, 1) * 100),
-            "response_rate": round(
-                (data.get("total_replied") or 0) / max(data.get("total_received") or 1, 1) * 100
-            ),
+            "response_rate": current_response_rate,
+            # Raw sentiment counts for frontend
+            "positive_count": data.get("positive") or 0,
+            "negative_count": data.get("negative") or 0,
+            "neutral_count": data.get("neutral") or 0,
+            # Period-over-period trends
+            "total_messages_trend": calc_trend(total_messages, prev_messages),
+            "time_saved_trend": calc_trend(time_saved_hours, prev_time_saved),
+            "response_rate_trend": calc_trend(current_response_rate, prev_response_rate),
+            "auto_replies_trend": calc_trend(auto_replies, prev_auto),
         }
 
     return {
@@ -513,6 +566,13 @@ async def get_analytics_summary(license_id: int, days: int = 30) -> dict:
         "time_saved_hours": 0,
         "satisfaction_rate": 0,
         "response_rate": 0,
+        "positive_count": 0,
+        "negative_count": 0,
+        "neutral_count": 0,
+        "total_messages_trend": 0,
+        "time_saved_trend": 0,
+        "response_rate_trend": 0,
+        "auto_replies_trend": 0,
     }
 
 

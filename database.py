@@ -225,9 +225,8 @@ def hash_license_key(key: str) -> str:
 
 async def generate_license_key(
     company_name: str,
-    contact_email: str = None,
     days_valid: int = 365,
-    max_requests: int = 100
+    max_requests: int = 50
 ) -> str:
     """Generate a new license key and store it in the database"""
     # Generate a readable license key format: MUDEER-XXXX-XXXX-XXXX
@@ -251,17 +250,17 @@ async def generate_license_key(
             await conn.execute(f"SELECT setval('license_keys_id_seq', {next_id}, false)")
             
             await conn.execute("""
-                INSERT INTO license_keys (id, key_hash, license_key_encrypted, company_name, contact_email, expires_at, max_requests_per_day)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-            """, next_id, key_hash, encrypted_key, company_name, contact_email, expires_at, max_requests)
+                INSERT INTO license_keys (id, key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            """, next_id, key_hash, encrypted_key, company_name, expires_at, max_requests)
         finally:
             await conn.close()
     else:
         async with aiosqlite.connect(DATABASE_PATH) as db:
             await db.execute("""
-                INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, contact_email, expires_at, max_requests_per_day)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (key_hash, encrypted_key, company_name, contact_email, expires_at.isoformat(), max_requests))
+                INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day)
+                VALUES (?, ?, ?, ?, ?)
+            """, (key_hash, encrypted_key, company_name, expires_at.isoformat(), max_requests))
             await db.commit()
     
     return raw_key
@@ -577,7 +576,6 @@ async def create_demo_license():
         # Create demo license
         demo_key = await generate_license_key(
             company_name="شركة تجريبية",
-            contact_email="demo@example.com",
             days_valid=365,
             max_requests=1000
         )
