@@ -694,9 +694,8 @@ class MessagePoller:
                     logger.info(f"Sent email reply for outbox {outbox_id}")
             
             elif channel == "telegram":
-                # First, try Telegram Phone (MTProto) if we have a phone session
+                # Send via Telegram Phone (MTProto) ONLY
                 session_string = await get_telegram_phone_session_data(license_id)
-                sent = False
                 
                 if session_string:
                     try:
@@ -711,32 +710,34 @@ class MessagePoller:
                             )
                             await mark_outbox_sent(outbox_id)
                             logger.info(f"Sent Telegram phone reply for outbox {outbox_id}")
-                            sent = True
                     except Exception as e:
                         logger.warning(f"Failed to send via Telegram phone for outbox {outbox_id}: {e}")
-                
-                # Fall back to Bot API if phone session didn't work or doesn't exist
-                if not sent:
-                    try:
-                        async with get_db() as db:
-                            row = await fetch_one(
-                                db,
-                                "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
-                                [license_id],
+                else:
+                    logger.warning(f"No active Telegram phone session for license {license_id}")
+
+            elif channel == "telegram_bot":
+                 # Send via Telegram Bot API ONLY
+                try:
+                    async with get_db() as db:
+                        row = await fetch_one(
+                            db,
+                            "SELECT bot_token FROM telegram_configs WHERE license_key_id = ?",
+                            [license_id],
+                        )
+                        if row and row.get("bot_token"):
+                            from services.telegram_service import TelegramService
+                            telegram_service = TelegramService(row["bot_token"])
+                            await telegram_service.send_message(
+                                chat_id=message["recipient_id"],
+                                text=message["body"]
                             )
-                            if row and row.get("bot_token"):
-                                telegram_service = TelegramService(row["bot_token"])
-                                await telegram_service.send_message(
-                                    chat_id=message["recipient_id"],
-                                    text=message["body"]
-                                )
-                                
-                                await mark_outbox_sent(outbox_id)
-                                logger.info(f"Sent Telegram bot reply for outbox {outbox_id}")
-                            else:
-                                logger.warning(f"No bot token found for fallback for license {license_id}")
-                    except Exception as e:
-                        logger.error(f"Failed to send via Telegram bot fallback for outbox {outbox_id}: {e}")
+                            
+                            await mark_outbox_sent(outbox_id)
+                            logger.info(f"Sent Telegram bot reply for outbox {outbox_id}")
+                        else:
+                            logger.warning(f"No bot token found for license {license_id}")
+                except Exception as e:
+                    logger.error(f"Failed to send via Telegram bot for outbox {outbox_id}: {e}")
 
             
             elif channel == "whatsapp":

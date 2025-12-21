@@ -453,12 +453,6 @@ class TelegramPhoneService:
                 reply_to=reply_to_message_id
             )
             
-            sent_message = await client.send_message(
-                entity,
-                text,
-                reply_to=reply_to_message_id
-            )
-            
             return {
                 "id": sent_message.id,
                 "chat_id": str(sent_message.peer_id.channel_id if hasattr(sent_message.peer_id, 'channel_id') else sent_message.peer_id.user_id),
