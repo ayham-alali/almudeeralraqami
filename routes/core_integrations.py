@@ -1473,6 +1473,81 @@ async def analyze_inbox_message(
                 draft_response=data["draft_response"],
             )
             
+            # Link message to customer and update lead score (same as workers.py)
+            try:
+                from db_helper import get_db, fetch_one, execute_sql, commit_db, DB_TYPE
+                from models.customers import get_or_create_customer, increment_customer_messages, update_customer_lead_score
+                from models.inbox import get_inbox_message_by_id as get_msg_by_id
+                
+                message = await get_msg_by_id(message_id, license_id)
+                
+                if message:
+                    sender_contact = message.get("sender_contact") or ""
+                    sender_name = message.get("sender_name") or ""
+                    
+                    if sender_contact:
+                        # Extract email or phone from contact
+                        email = None
+                        phone = None
+                        if "@" in sender_contact:
+                            email = sender_contact
+                        elif sender_contact.replace("+", "").replace("-", "").replace(" ", "").isdigit():
+                            phone = sender_contact
+                        
+                        # Get or create customer
+                        customer = await get_or_create_customer(
+                            license_id=license_id,
+                            phone=phone,
+                            email=email,
+                            name=sender_name
+                        )
+                        
+                        if customer and customer.get("id"):
+                            customer_id = customer["id"]
+                            
+                            # Increment message count
+                            await increment_customer_messages(customer_id)
+                            
+                            # Link message to customer
+                            async with get_db() as db:
+                                existing = await fetch_one(
+                                    db,
+                                    "SELECT 1 FROM customer_messages WHERE customer_id = ? AND inbox_message_id = ?",
+                                    [customer_id, message_id]
+                                )
+                                if not existing:
+                                    if DB_TYPE == "postgresql":
+                                        await execute_sql(
+                                            db,
+                                            """
+                                            INSERT INTO customer_messages (customer_id, inbox_message_id)
+                                            VALUES (?, ?)
+                                            ON CONFLICT (customer_id, inbox_message_id) DO NOTHING
+                                            """,
+                                            [customer_id, message_id]
+                                        )
+                                    else:
+                                        await execute_sql(
+                                            db,
+                                            """
+                                            INSERT OR IGNORE INTO customer_messages (customer_id, inbox_message_id)
+                                            VALUES (?, ?)
+                                            """,
+                                            [customer_id, message_id]
+                                        )
+                                    await commit_db(db)
+                            
+                            # Update lead score
+                            await update_customer_lead_score(
+                                license_id=license_id,
+                                customer_id=customer_id,
+                                intent=data.get("intent"),
+                                sentiment=data.get("sentiment"),
+                                sentiment_score=0.0
+                            )
+            except Exception as crm_error:
+                print(f"Error updating CRM for webhook message {message_id}: {crm_error}")
+            
             # Auto-reply if enabled
             if auto_reply and data["draft_response"]:
                 # Get message details for sending
