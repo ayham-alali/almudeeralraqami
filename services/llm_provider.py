@@ -60,8 +60,9 @@ class LLMConfig:
     max_concurrent_requests: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_CONCURRENT", "1")))
     
     # Post-request delay in seconds - adds breathing room between requests
-    # Gemini free tier: ~15 requests/minute = 4 seconds between requests recommended
-    post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "3.0")))
+    # Gemini free tier: ~15 requests/minute = 4+ seconds between requests recommended
+    # Using 5 seconds for safety margin with 10 users
+    post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "5.0")))
 
 
 # ============ Global Concurrency Control ============
@@ -530,13 +531,23 @@ class LLMService:
         ) if self.config.cache_enabled else None
         
         # Initialize providers in priority order
-        # If user has OpenAI key, use it first (best quality)
-        # Then Gemini (free), then OpenRouter (free backup)
+        # GEMINI-ONLY MODE: Only Gemini is active by default
+        # OpenAI is kept as fallback if key is provided
+        # OpenRouter is DISABLED to ensure Gemini-quality responses
+        # Set ENABLE_OPENROUTER=true to re-enable OpenRouter as backup
+        enable_openrouter = os.getenv("ENABLE_OPENROUTER", "false").lower() == "true"
+        
         self.providers: List[LLMProvider] = [
-            OpenAIProvider(self.config),
-            GeminiProvider(self.config),
-            OpenRouterProvider(self.config),
+            OpenAIProvider(self.config),  # Only used if OPENAI_API_KEY is set
+            GeminiProvider(self.config),   # PRIMARY - always active
         ]
+        
+        # Only add OpenRouter if explicitly enabled (disabled by default for quality)
+        if enable_openrouter:
+            self.providers.append(OpenRouterProvider(self.config))
+            logger.info("OpenRouter backup provider ENABLED")
+        else:
+            logger.info("OpenRouter backup provider DISABLED (Gemini-only mode)")
         
         # Track statistics
         self.stats = {

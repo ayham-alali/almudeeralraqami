@@ -74,6 +74,11 @@ from message_filters import apply_filters
 class MessagePoller:
     """Background worker for polling messages from all channels"""
     
+    # Rate limits per user to protect Gemini free tier (15 RPM, 1500 RPD)
+    # With 3 API calls per message: 500 messages/day total, 50/user for 10 users
+    MAX_MESSAGES_PER_USER_PER_DAY = int(os.getenv("MAX_MESSAGES_PER_USER_DAY", "50"))
+    MAX_MESSAGES_PER_USER_PER_MINUTE = int(os.getenv("MAX_MESSAGES_PER_USER_MINUTE", "1"))
+    
     def __init__(self):
         self.running = False
         self.tasks: Dict[int, asyncio.Task] = {}
@@ -97,8 +102,63 @@ class MessagePoller:
         self.background_tasks: Set[asyncio.Task] = set()
         
         # Limit concurrent AI requests to prevent hitting free tier rate limits
-        # Using 1 concurrent request max to be extra safe with Google/OpenRouter free tiers
+        # Using 1 concurrent request max to be extra safe with Gemini free tier
         self.ai_semaphore = asyncio.Semaphore(1)
+        
+        # Per-user rate limiting tracking
+        # Structure: {license_id: {"daily_count": int, "daily_reset": datetime, "minute_count": int, "minute_reset": datetime}}
+        self._user_rate_limits: Dict[int, Dict[str, Any]] = {}
+    
+    def _check_user_rate_limit(self, license_id: int) -> tuple[bool, str]:
+        """
+        Check if user is within rate limits.
+        Returns (allowed, reason) tuple.
+        """
+        now = datetime.utcnow()
+        
+        # Initialize tracking for new user
+        if license_id not in self._user_rate_limits:
+            self._user_rate_limits[license_id] = {
+                "daily_count": 0,
+                "daily_reset": now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1),
+                "minute_count": 0,
+                "minute_reset": now + timedelta(minutes=1),
+            }
+        
+        limits = self._user_rate_limits[license_id]
+        
+        # Reset daily counter if new day
+        if now >= limits["daily_reset"]:
+            limits["daily_count"] = 0
+            limits["daily_reset"] = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        
+        # Reset minute counter if minute passed
+        if now >= limits["minute_reset"]:
+            limits["minute_count"] = 0
+            limits["minute_reset"] = now + timedelta(minutes=1)
+        
+        # Check daily limit
+        if limits["daily_count"] >= self.MAX_MESSAGES_PER_USER_PER_DAY:
+            remaining = (limits["daily_reset"] - now).total_seconds() / 3600
+            return False, f"Daily limit reached ({self.MAX_MESSAGES_PER_USER_PER_DAY}/day). Resets in {remaining:.1f}h"
+        
+        # Check minute limit
+        if limits["minute_count"] >= self.MAX_MESSAGES_PER_USER_PER_MINUTE:
+            remaining = (limits["minute_reset"] - now).total_seconds()
+            return False, f"Minute limit reached ({self.MAX_MESSAGES_PER_USER_PER_MINUTE}/min). Resets in {remaining:.0f}s"
+        
+        return True, ""
+    
+    def _increment_user_rate_limit(self, license_id: int):
+        """Increment rate limit counters for a user."""
+        if license_id in self._user_rate_limits:
+            self._user_rate_limits[license_id]["daily_count"] += 1
+            self._user_rate_limits[license_id]["minute_count"] += 1
+            logger.debug(
+                f"License {license_id} rate limit: "
+                f"{self._user_rate_limits[license_id]['daily_count']}/{self.MAX_MESSAGES_PER_USER_PER_DAY} daily, "
+                f"{self._user_rate_limits[license_id]['minute_count']}/{self.MAX_MESSAGES_PER_USER_PER_MINUTE} per min"
+            )
     
     async def start(self):
         """Start all polling workers"""
@@ -134,8 +194,8 @@ class MessagePoller:
                 self.status["telegram_polling"]["last_check"] = now_iso
                 
                 for license_id in active_licenses:
-                    # Stagger polling: random delay between licenses to spread AI load
-                    await asyncio.sleep(random.uniform(1.0, 3.0))
+                    # Stagger polling: increased delay between licenses to spread AI load
+                    await asyncio.sleep(random.uniform(3.0, 8.0))
                     # Poll each integration type
                     t1 = asyncio.create_task(self._poll_email(license_id))
                     self.background_tasks.add(t1)
@@ -146,16 +206,17 @@ class MessagePoller:
                     t2.add_done_callback(self.background_tasks.discard)
                     # WhatsApp uses webhooks, so no polling needed
                 
-                # Wait 120 seconds before next poll (doubled to reduce AI API usage)
-                next_ts = (datetime.utcnow() + timedelta(seconds=120)).isoformat()
+                # Wait 300 seconds (5 minutes) before next poll - optimized for Gemini free tier
+                # This ensures we stay well within 15 RPM limit even with 10 users
+                next_ts = (datetime.utcnow() + timedelta(seconds=300)).isoformat()
                 self.status["email_polling"]["next_check"] = next_ts
-                await asyncio.sleep(120)
+                await asyncio.sleep(300)
                 
             except Exception as e:
                 logger.error(f"Error in polling loop: {e}", exc_info=True)
                 self.status["email_polling"]["status"] = "error"
                 self.status["telegram_polling"]["status"] = "error"
-                await asyncio.sleep(120)  # Wait before retry
+                await asyncio.sleep(300)  # Wait before retry
     
     async def _get_active_licenses(self) -> List[int]:
         """Get list of license IDs with active integrations"""
@@ -562,12 +623,42 @@ class MessagePoller:
                 logger.info(f"Skipping AI for message {message_id}: duplicate content detected")
                 return
             
+            # Check per-user rate limits (Gemini protection)
+            allowed, reason = self._check_user_rate_limit(license_id)
+            if not allowed:
+                logger.warning(f"Rate limit for license {license_id}: {reason}. Message {message_id} queued.")
+                # Message will be processed later when limits reset
+                # For now, we skip AI processing - the message is saved but not analyzed
+                return
+            # Fetch conversation history for context-aware AI responses
+            conversation_history = ""
+            if recipient:  # recipient contains sender_contact
+                try:
+                    from models import get_recent_conversation
+                    conversation_history = await get_recent_conversation(
+                        license_id=license_id,
+                        sender_contact=recipient,
+                        limit=5
+                    )
+                    if conversation_history:
+                        logger.debug(f"Loaded conversation history for {recipient}: {len(conversation_history)} chars")
+                except Exception as hist_e:
+                    logger.warning(f"Failed to load conversation history: {hist_e}")
+            
             # Process with AI agent
             try:
                 # Use semaphore to limit global concurrency for free LLM tiers
                 async with self.ai_semaphore:
                     # Add timeout to prevent hanging if AI service stalls
-                    result = await asyncio.wait_for(process_message(body), timeout=60.0)
+                    result = await asyncio.wait_for(
+                        process_message(
+                            message=body,
+                            sender_name=sender_name,
+                            sender_contact=recipient,
+                            conversation_history=conversation_history
+                        ),
+                        timeout=60.0
+                    )
             except asyncio.TimeoutError:
                 logger.warning(f"AI processing timed out for message {message_id}")
                 return
@@ -592,6 +683,9 @@ class MessagePoller:
                 summary=data["summary"],
                 draft_response=data["draft_response"],
             )
+            
+            # Increment rate limit counter AFTER successful AI processing
+            self._increment_user_rate_limit(license_id)
             
             # Link message to customer and update lead score
             try:
