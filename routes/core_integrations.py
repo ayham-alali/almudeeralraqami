@@ -859,9 +859,40 @@ async def fetch_emails(
             oauth_service
         )
         
-        # Fetch emails using Gmail API (last 72 hours only)
+        # Calculate since_hours based on when the channel was connected
+        # This ensures we ONLY fetch messages received after the channel was connected
+        from datetime import datetime, timedelta
+        config_created_at = config.get("created_at")
+        
+        if config_created_at:
+            if isinstance(config_created_at, str):
+                try:
+                    created_dt = datetime.fromisoformat(config_created_at.replace("Z", "+00:00"))
+                    if created_dt.tzinfo:
+                        created_dt = created_dt.replace(tzinfo=None)
+                except ValueError:
+                    created_dt = None
+            elif hasattr(config_created_at, "isoformat"):
+                created_dt = config_created_at
+                if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo:
+                    created_dt = created_dt.replace(tzinfo=None)
+            else:
+                created_dt = None
+            
+            if created_dt:
+                hours_since_connected = (datetime.utcnow() - created_dt).total_seconds() / 3600
+                # Add 1 hour buffer to catch any edge cases
+                since_hours = int(hours_since_connected) + 1
+            else:
+                # Fallback: if no created_at, only fetch last 1 hour
+                since_hours = 1
+        else:
+            # No created_at means new config, only fetch last 1 hour
+            since_hours = 1
+        
+        # Fetch emails using Gmail API
         emails = await gmail_service.fetch_new_emails(
-            since_hours=72,
+            since_hours=since_hours,
             limit=50
         )
         

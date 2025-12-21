@@ -60,6 +60,7 @@ from models import (
     approve_outbox_message,
     mark_outbox_sent,
     get_telegram_phone_session_data,
+    get_telegram_phone_session,
     get_or_create_customer,
     update_customer_lead_score,
     increment_customer_messages,
@@ -264,9 +265,42 @@ class MessagePoller:
             # This prevents AI from processing emails WE sent
             our_email_address = config.get("email_address", "").lower()
             
-            # Fetch new emails using Gmail API (last 72 hours)
-            # Increased limit to 200 to capture more messages per poll
-            emails = await gmail_service.fetch_new_emails(since_hours=72, limit=200)
+            # Calculate since_hours based on when the channel was connected
+            # This ensures we ONLY fetch messages received after the channel was connected
+            config_created_at = config.get("created_at")
+            
+            if config_created_at:
+                # Parse created_at to datetime
+                if isinstance(config_created_at, str):
+                    try:
+                        created_dt = datetime.fromisoformat(config_created_at.replace("Z", "+00:00"))
+                        # Remove timezone for comparison with utcnow()
+                        if created_dt.tzinfo:
+                            created_dt = created_dt.replace(tzinfo=None)
+                    except ValueError:
+                        created_dt = None
+                elif hasattr(config_created_at, "isoformat"):
+                    created_dt = config_created_at
+                    if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo:
+                        created_dt = created_dt.replace(tzinfo=None)
+                else:
+                    created_dt = None
+                
+                if created_dt:
+                    # Calculate hours since channel was connected
+                    hours_since_connected = (datetime.utcnow() - created_dt).total_seconds() / 3600
+                    # Add 1 hour buffer to catch any edge cases
+                    since_hours = int(hours_since_connected) + 1
+                else:
+                    # Fallback: if no created_at, only fetch last 1 hour
+                    since_hours = 1
+            else:
+                # No created_at means new config, only fetch last 1 hour
+                since_hours = 1
+            
+            # Fetch new emails using Gmail API
+            # Limit to 200 to capture enough messages per poll
+            emails = await gmail_service.fetch_new_emails(since_hours=since_hours, limit=200)
             
             # Get recent messages for duplicate detection
             # Use higher limit to avoid missing duplicates when inbox is large
@@ -343,14 +377,48 @@ class MessagePoller:
                 # No phone session configured for this license
                 return
 
+            # Get session info for created_at timestamp
+            session_info = await get_telegram_phone_session(license_id)
+            
+            # Calculate since_hours based on when the channel was connected
+            # This ensures we ONLY fetch messages received after the channel was connected
+            session_created_at = session_info.get("created_at") if session_info else None
+            
+            if session_created_at:
+                # Parse created_at to datetime
+                if isinstance(session_created_at, str):
+                    try:
+                        created_dt = datetime.fromisoformat(session_created_at.replace("Z", "+00:00"))
+                        if created_dt.tzinfo:
+                            created_dt = created_dt.replace(tzinfo=None)
+                    except ValueError:
+                        created_dt = None
+                elif hasattr(session_created_at, "isoformat"):
+                    created_dt = session_created_at
+                    if hasattr(created_dt, 'tzinfo') and created_dt.tzinfo:
+                        created_dt = created_dt.replace(tzinfo=None)
+                else:
+                    created_dt = None
+                
+                if created_dt:
+                    hours_since_connected = (datetime.utcnow() - created_dt).total_seconds() / 3600
+                    # Add 1 hour buffer to catch any edge cases
+                    since_hours = int(hours_since_connected) + 1
+                else:
+                    # Fallback: if no created_at, only fetch last 1 hour
+                    since_hours = 1
+            else:
+                # No created_at means new config, only fetch last 1 hour
+                since_hours = 1
+
             phone_service = TelegramPhoneService()
 
-            # Fetch recent messages from Telegram phone account (last 72 hours)
-            # Increased limit to 200 to capture more messages per poll
+            # Fetch recent messages from Telegram phone account
+            # Limit to 200 to capture enough messages per poll
             try:
                 messages = await phone_service.get_recent_messages(
                     session_string=session_string,
-                    since_hours=72,
+                    since_hours=since_hours,
                     limit=200,
                 )
             except Exception as e:
