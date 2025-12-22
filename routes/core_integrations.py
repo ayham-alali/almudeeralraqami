@@ -29,6 +29,7 @@ from models import (
     get_inbox_messages_count,
     get_inbox_conversations,
     get_inbox_conversations_count,
+    get_inbox_status_counts,
     get_conversation_messages,
     update_inbox_status,
     create_outbox_message,
@@ -1329,12 +1330,18 @@ async def get_conversations(
         channel=channel
     )
     
+    # Get status counts across ALL channels (not filtered) for badge display
+    status_counts = await get_inbox_status_counts(
+        license_id=license["license_id"]
+    )
+    
     return {
         "conversations": conversations,
         "total": total,
         "limit": limit,
         "offset": offset,
-        "has_more": offset + len(conversations) < total
+        "has_more": offset + len(conversations) < total,
+        "status_counts": status_counts
     }
 
 

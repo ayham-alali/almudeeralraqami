@@ -686,6 +686,39 @@ async def update_daily_analytics(
         await commit_db(db)
 
 
+async def get_ai_usage_today(license_id: int) -> dict:
+    """Get today's AI usage for quota display."""
+    today = datetime.now().date().isoformat()
+    
+    # Daily limit per user (matching workers.py MAX_MESSAGES_PER_USER_PER_DAY)
+    daily_limit = 50
+    
+    async with get_db() as db:
+        row = await fetch_one(
+            db,
+            """
+            SELECT messages_received, messages_replied
+            FROM analytics 
+            WHERE license_key_id = ? AND date = ?
+            """,
+            [license_id, today]
+        )
+        
+        if row:
+            # Use messages_received as it counts all incoming messages processed
+            used = row.get("messages_received") or 0
+        else:
+            used = 0
+        
+        return {
+            "used": used,
+            "limit": daily_limit,
+            "remaining": max(0, daily_limit - used),
+            "percentage": min(100, round((used / daily_limit) * 100)) if daily_limit > 0 else 0,
+            "date": today
+        }
+
+
 async def get_analytics_summary(license_id: int, days: int = 30) -> dict:
     """
     Get analytics summary for dashboard with period-over-period trends.

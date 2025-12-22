@@ -413,11 +413,12 @@ async def classify_node(state: AgentState) -> AgentState:
         except json.JSONDecodeError:
             pass
     
-    # Fallback to rule-based
-    classification = rule_based_classify(state["raw_message"])
-    state["intent"] = classification["intent"]
-    state["urgency"] = classification["urgency"]
-    state["sentiment"] = classification["sentiment"]
+    # Fallback: Mark as pending retry (no rule-based fallback)
+    # This ensures only Gemini-quality responses are used
+    state["intent"] = "pending"
+    state["urgency"] = "عادي"
+    state["sentiment"] = "محايد"
+    state["error"] = "LLM unavailable - will retry"
     
     return state
 
@@ -471,10 +472,11 @@ async def extract_node(state: AgentState) -> AgentState:
         except json.JSONDecodeError:
             pass
     
-    # Fallback: Basic extraction
-    sentences = state["raw_message"].split('.')
-    state["key_points"] = [s.strip() for s in sentences[:3] if s.strip()]
-    state["action_items"] = ["مراجعة الطلب", "الرد على العميل"]
+    # Fallback: Skip extraction if LLM failed (will retry later)
+    if not state.get("key_points"):
+        state["key_points"] = []
+    if not state.get("action_items"):
+        state["action_items"] = []
     
     return state
 
@@ -603,12 +605,14 @@ async def draft_node(state: AgentState) -> AgentState:
         max_tokens=1200,  # Arabic needs more tokens - increased from 800
     )
     
-    # Lower threshold to 15 - accept short but valid responses like "بالطبع، كيف أساعدك؟"
+    # Lower threshold to 15 - accept short but valid responses
     if llm_response and len(llm_response.strip()) > 15:
         state["draft_response"] = llm_response.strip()
     else:
-        # Use human-like template-based response
-        state["draft_response"] = generate_rule_based_response(state)
+        # No fallback to generic templates - use placeholder for retry
+        # This ensures only Gemini-quality responses are shown to users
+        state["draft_response"] = "⏳ جاري تحليل الرسالة تلقائياً..."
+        state["error"] = "LLM unavailable - pending retry"
         
     # Update analytics for reply generation
     if state.get("preferences") and state["preferences"].get("license_key_id"):

@@ -46,9 +46,10 @@ class LLMConfig:
     
     # Failover: OpenAI (if key set) → Gemini → OpenRouter → Rule-based
     
-    # Retry settings - more aggressive for rate limit handling
-    max_retries: int = 3
-    base_delay: float = 2.0  # Increased from 1.0 for better rate limit recovery
+    # Retry settings - aggressive for rate limit handling
+    # Gemini free tier has strict limits, so we wait longer between retries
+    max_retries: int = 5  # Increased from 3 for better recovery
+    base_delay: float = 10.0  # Increased from 2.0 for rate limit recovery
     
     # Cache settings
     cache_enabled: bool = field(default_factory=lambda: os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true")

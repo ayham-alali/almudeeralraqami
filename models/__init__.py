@@ -48,6 +48,7 @@ from .inbox import (
     get_inbox_messages_count,
     get_inbox_conversations,
     get_inbox_conversations_count,
+    get_inbox_status_counts,
     get_conversation_messages,
     get_full_chat_history,
     update_inbox_status,
@@ -74,6 +75,7 @@ from .customers import (
     update_customer_lead_score,
     # Analytics
     update_daily_analytics,
+    get_ai_usage_today,
     get_analytics_summary,
     # Preferences
     get_preferences,
@@ -142,6 +144,7 @@ __all__ = [
     "get_inbox_messages_count",
     "get_inbox_conversations",
     "get_inbox_conversations_count",
+    "get_inbox_status_counts",
     "get_conversation_messages",
     "update_inbox_status",
     "ignore_chat",
@@ -162,6 +165,7 @@ __all__ = [
     "update_customer_lead_score",
     # Analytics
     "update_daily_analytics",
+    "get_ai_usage_today",
     "get_analytics_summary",
     # Preferences
     "get_preferences",

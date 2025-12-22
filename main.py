@@ -848,6 +848,23 @@ async def save_to_crm(
     return {"success": True, "entry_id": entry_id, "message": "تم الحفظ بنجاح"}
 
 
+@app.get("/api/ai-usage", tags=["Analytics"])
+async def get_ai_usage_endpoint(
+    license: dict = Depends(verify_license)
+):
+    """
+    Get current AI usage quota for the day.
+    
+    Returns:
+        used: Number of messages processed today
+        limit: Daily limit (50)
+        remaining: Remaining quota
+        percentage: Usage percentage
+    """
+    from models import get_ai_usage_today
+    return await get_ai_usage_today(license["license_id"])
+
+
 @app.get("/api/crm/entries", response_model=CRMListResponse, tags=["CRM"])
 async def list_crm_entries(
     limit: int = 50,

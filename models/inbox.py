@@ -436,6 +436,58 @@ async def get_inbox_conversations_count(
         return row["count"] if row else 0
 
 
+async def get_inbox_status_counts(license_id: int) -> dict:
+    """
+    Get status counts across all channels for badge display.
+    Counts unique conversations (senders) by their latest message status.
+    Returns: {analyzed: N, sent: N, ignored: N}
+    """
+    from db_helper import DB_TYPE
+    
+    if DB_TYPE == "postgresql":
+        query = """
+            WITH latest_per_sender AS (
+                SELECT DISTINCT ON (COALESCE(sender_contact, sender_id::text, 'unknown'))
+                    status
+                FROM inbox_messages
+                WHERE license_key_id = ?
+                ORDER BY COALESCE(sender_contact, sender_id::text, 'unknown'), created_at DESC
+            )
+            SELECT 
+                COALESCE(SUM(CASE WHEN status = 'analyzed' THEN 1 ELSE 0 END), 0) as analyzed,
+                COALESCE(SUM(CASE WHEN status IN ('approved', 'sent', 'auto_replied') THEN 1 ELSE 0 END), 0) as sent,
+                COALESCE(SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END), 0) as ignored
+            FROM latest_per_sender
+        """
+    else:
+        # SQLite version
+        query = """
+            SELECT 
+                COALESCE(SUM(CASE WHEN status = 'analyzed' THEN 1 ELSE 0 END), 0) as analyzed,
+                COALESCE(SUM(CASE WHEN status IN ('approved', 'sent', 'auto_replied') THEN 1 ELSE 0 END), 0) as sent,
+                COALESCE(SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END), 0) as ignored
+            FROM inbox_messages m
+            WHERE m.license_key_id = ?
+            AND m.id = (
+                SELECT m2.id FROM inbox_messages m2
+                WHERE m2.license_key_id = m.license_key_id
+                AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
+                ORDER BY m2.created_at DESC
+                LIMIT 1
+            )
+        """
+    
+    async with get_db() as db:
+        row = await fetch_one(db, query, [license_id])
+        if row:
+            return {
+                "analyzed": row["analyzed"] or 0,
+                "sent": row["sent"] or 0,
+                "ignored": row["ignored"] or 0
+            }
+        return {"analyzed": 0, "sent": 0, "ignored": 0}
+
+
 async def get_conversation_messages(
     license_id: int,
     sender_contact: str,

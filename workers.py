@@ -205,6 +205,11 @@ class MessagePoller:
                     self.background_tasks.add(t2)
                     t2.add_done_callback(self.background_tasks.discard)
                     # WhatsApp uses webhooks, so no polling needed
+                    
+                    # Retry pending messages (those with placeholder responses from failed AI)
+                    t3 = asyncio.create_task(self._retry_pending_messages(license_id))
+                    self.background_tasks.add(t3)
+                    t3.add_done_callback(self.background_tasks.discard)
                 
                 # Wait 300 seconds (5 minutes) before next poll - optimized for Gemini free tier
                 # This ensures we stay well within 15 RPM limit even with 10 users
@@ -279,6 +284,65 @@ class MessagePoller:
             logger.error(f"Error getting active licenses: {e}")
         
         return list(set(licenses))  # Remove duplicates
+    
+    async def _retry_pending_messages(self, license_id: int):
+        """Retry AI analysis for messages with placeholder responses"""
+        try:
+            # Find messages with pending placeholder response
+            placeholder = "⏳ جاري تحليل الرسالة تلقائياً..."
+            
+            async with get_db() as db:
+                # Query messages with placeholder draft_response
+                rows = await fetch_all(
+                    db,
+                    """
+                    SELECT id, body, sender_contact, sender_name, channel
+                    FROM inbox_messages
+                    WHERE license_key_id = ?
+                      AND (draft_response = ? OR draft_response IS NULL OR draft_response = '')
+                      AND created_at > datetime('now', '-24 hours')
+                    ORDER BY created_at DESC
+                    LIMIT 5
+                    """,
+                    [license_id, placeholder]
+                )
+                
+                if not rows:
+                    return
+                
+                logger.info(f"License {license_id}: Found {len(rows)} pending messages to retry")
+                
+                for row in rows:
+                    message_id = row.get("id") or row[0]
+                    body = row.get("body") or row[1]
+                    sender_contact = row.get("sender_contact") or row[2]
+                    sender_name = row.get("sender_name") or row[3]
+                    channel = row.get("channel") or row[4]
+                    
+                    # Check rate limit before retrying
+                    allowed, reason = self._check_user_rate_limit(license_id)
+                    if not allowed:
+                        logger.debug(f"Rate limit for license {license_id}: {reason}. Retry skipped.")
+                        break  # Stop retrying for this license
+                    
+                    # Add delay between retries
+                    await asyncio.sleep(random.uniform(5.0, 10.0))
+                    
+                    # Re-analyze the message
+                    await self._analyze_and_process_message(
+                        message_id=message_id,
+                        body=body,
+                        license_id=license_id,
+                        auto_reply=False,  # Don't auto-reply on retry
+                        channel=channel,
+                        recipient=sender_contact,
+                        sender_name=sender_name
+                    )
+                    
+                    logger.info(f"Retried AI analysis for message {message_id}")
+                    
+        except Exception as e:
+            logger.error(f"Error retrying pending messages for license {license_id}: {e}")
     
     async def _poll_email(self, license_id: int):
         """Poll email for new messages using Gmail API"""
