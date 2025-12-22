@@ -694,6 +694,25 @@ class MessagePoller:
             # Check for duplicate content to avoid wasting AI quota
             if self._is_duplicate_content(body, sender_name):
                 logger.info(f"Skipping AI for message {message_id}: duplicate content detected")
+                
+                # Mark as analyzed but indicating it was skipped to prevent retry loop
+                try:
+                    await update_inbox_analysis(
+                        message_id=message_id,
+                        analysis_data={
+                            "intent": "duplicate",
+                            "urgency": "low", 
+                            "sentiment": "neutral",
+                            "summary": "تم تخطي التحليل: محتوى مكرر",
+                            "draft_response": "", # Clear any draft
+                            "suggested_actions": []
+                        },
+                        draft_response="Duplicate content blocked", # Set non-placeholder value to stop retries
+                        status="analyzed"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to update duplicate message status: {e}")
+                
                 return
             
             # Check per-user rate limits (Gemini protection)
