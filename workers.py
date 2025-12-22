@@ -699,17 +699,15 @@ class MessagePoller:
                 try:
                     await update_inbox_analysis(
                         message_id=message_id,
-                        analysis_data={
-                            "intent": "duplicate",
-                            "urgency": "low", 
-                            "sentiment": "neutral",
-                            "summary": "تم تخطي التحليل: محتوى مكرر",
-                            "draft_response": "", # Clear any draft
-                            "suggested_actions": []
-                        },
-                        draft_response="Duplicate content blocked", # Set non-placeholder value to stop retries
-                        status="analyzed"
+                        intent="duplicate",
+                        urgency="low",
+                        sentiment="neutral",
+                        language=None,
+                        dialect=None,
+                        summary="تم تخطي التحليل: محتوى مكرر",
+                        draft_response="⏹️ تم تخطي هذه الرسالة (محتوى مكرر)"  # Non-placeholder value to stop retries
                     )
+                    logger.info(f"Marked message {message_id} as duplicate-skipped")
                 except Exception as e:
                     logger.error(f"Failed to update duplicate message status: {e}")
                 
