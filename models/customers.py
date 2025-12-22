@@ -688,7 +688,9 @@ async def update_daily_analytics(
 
 async def get_ai_usage_today(license_id: int) -> dict:
     """Get today's AI usage for quota display."""
-    today = datetime.now().date().isoformat()
+    today_date = datetime.now().date()
+    # Use date object for PostgreSQL, ISO string for SQLite
+    today = today_date if DB_TYPE == "postgresql" else today_date.isoformat()
     
     # Daily limit per user (matching workers.py MAX_MESSAGES_PER_USER_PER_DAY)
     daily_limit = 50

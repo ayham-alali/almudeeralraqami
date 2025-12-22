@@ -292,14 +292,14 @@ class MessagePoller:
             placeholder = "⏳ جاري تحليل الرسالة تلقائياً..."
             
             async with get_db() as db:
-                # Query messages with placeholder draft_response
+                # Query messages with placeholder ai_draft_response
                 rows = await fetch_all(
                     db,
                     """
                     SELECT id, body, sender_contact, sender_name, channel
                     FROM inbox_messages
                     WHERE license_key_id = ?
-                      AND (draft_response = ? OR draft_response IS NULL OR draft_response = '')
+                      AND (ai_draft_response = ? OR ai_draft_response IS NULL OR ai_draft_response = '')
                       AND created_at > datetime('now', '-24 hours')
                     ORDER BY created_at DESC
                     LIMIT 5
