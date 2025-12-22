@@ -105,6 +105,17 @@ class MessagePoller:
         # Using 1 concurrent request max to be extra safe with Gemini free tier
         self.ai_semaphore = asyncio.Semaphore(1)
         
+        # Track message retry counts to prevent infinite retry loops
+        # Structure: {message_id: retry_count}
+        self._retry_counts: Dict[int, int] = {}
+        
+        # Track recent message hashes for duplicate detection
+        self._recent_message_hashes: Set[str] = set()
+        
+        # Track messages retried this poll cycle (cleared each cycle)
+        # Prevents rapid retry loops within the same 5-minute cycle
+        self._retried_this_cycle: Set[int] = set()
+        
         # Per-user rate limiting tracking
         # Structure: {license_id: {"daily_count": int, "daily_reset": datetime, "minute_count": int, "minute_reset": datetime}}
         self._user_rate_limits: Dict[int, Dict[str, Any]] = {}
@@ -187,6 +198,10 @@ class MessagePoller:
         """Main polling loop - runs every minute"""
         while self.running:
             try:
+                # Clear retry tracking at the start of each cycle
+                # This allows messages to be retried in this new 5-min window
+                self._retried_this_cycle.clear()
+                
                 # Get all active licenses with integrations
                 active_licenses = await self._get_active_licenses()
                 now_iso = datetime.utcnow().isoformat()
@@ -328,11 +343,19 @@ class MessagePoller:
                     sender_name = row.get("sender_name") or row[3]
                     channel = row.get("channel") or row[4]
                     
+                    # Skip if already retried this cycle (prevents rapid retry loops)
+                    if message_id in self._retried_this_cycle:
+                        logger.debug(f"Skipping message {message_id}: already retried this cycle")
+                        continue
+                    
                     # Check rate limit before retrying
                     allowed, reason = self._check_user_rate_limit(license_id)
                     if not allowed:
                         logger.debug(f"Rate limit for license {license_id}: {reason}. Retry skipped.")
                         break  # Stop retrying for this license
+                    
+                    # Mark as retried this cycle
+                    self._retried_this_cycle.add(message_id)
                     
                     # Add delay between retries
                     await asyncio.sleep(random.uniform(5.0, 10.0))
@@ -750,14 +773,18 @@ class MessagePoller:
                         timeout=60.0
                     )
             except asyncio.TimeoutError:
-                logger.warning(f"AI processing timed out for message {message_id}")
+                logger.warning(f"AI processing timed out for message {message_id} - will retry next cycle")
+                # Message stays with placeholder, will be retried in next poll cycle (5 min)
+                # This ensures we ALWAYS eventually get an AI response
                 return
+                
             except Exception as ai_e:
-                logger.error(f"AI processing error for message {message_id}: {ai_e}")
+                logger.error(f"AI processing error for message {message_id}: {ai_e} - will retry next cycle")
+                # Message stays with placeholder, will be retried in next poll cycle
                 return
             
             if not result["success"]:
-                logger.warning(f"AI processing failed for message {message_id}: {result.get('error')}")
+                logger.warning(f"AI processing failed for message {message_id}: {result.get('error')} - will retry next cycle")
                 return
             
             data = result["data"]
