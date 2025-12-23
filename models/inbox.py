@@ -417,27 +417,61 @@ async def get_inbox_conversations_count(
     status: str = None,
     channel: str = None
 ) -> int:
-    """Get total number of unique conversations (senders)."""
-    where_clauses = ["license_key_id = ?"]
-    params = [license_id]
-    
-    if status == 'sent':
-        where_clauses.append("status IN ('approved', 'sent', 'auto_replied')")
-    elif status:
-        where_clauses.append("status = ?")
-        params.append(status)
-    
-    if channel:
-        where_clauses.append("channel = ?")
-        params.append(channel)
-    
-    where_sql = " AND ".join(where_clauses)
-    
-    query = f"""
-        SELECT COUNT(DISTINCT COALESCE(sender_contact, sender_id, 'unknown')) as count
-        FROM inbox_messages
-        WHERE {where_sql}
     """
+    Get total number of unique conversations (senders).
+    Counts conversations by their LATEST message status (same logic as get_inbox_conversations).
+    """
+    from db_helper import DB_TYPE
+    
+    # Build base WHERE for license (always applied)
+    base_where = "license_key_id = ?"
+    base_params = [license_id]
+    
+    # Channel filter can be applied in base query
+    if channel:
+        base_where += " AND channel = ?"
+        base_params.append(channel)
+    
+    # Build status filter (applied AFTER grouping)
+    status_filter = ""
+    status_params = []
+    if status == 'sent':
+        status_filter = "status IN ('approved', 'sent', 'auto_replied')"
+    elif status:
+        status_filter = "status = ?"
+        status_params.append(status)
+    
+    if DB_TYPE == "postgresql":
+        # PostgreSQL: Count unique senders where latest message matches status
+        query = f"""
+            WITH latest_per_sender AS (
+                SELECT DISTINCT ON (COALESCE(sender_contact, sender_id::text, 'unknown'))
+                    status
+                FROM inbox_messages
+                WHERE {base_where}
+                ORDER BY COALESCE(sender_contact, sender_id::text, 'unknown'), created_at DESC
+            )
+            SELECT COUNT(*) as count
+            FROM latest_per_sender
+            {"WHERE " + status_filter if status_filter else ""}
+        """
+        params = base_params + status_params
+    else:
+        # SQLite version - count conversations where latest message matches status
+        query = f"""
+            SELECT COUNT(*) as count
+            FROM inbox_messages m
+            WHERE {base_where}
+            AND m.id = (
+                SELECT m3.id FROM inbox_messages m3
+                WHERE m3.license_key_id = m.license_key_id
+                AND COALESCE(m3.sender_contact, m3.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
+                ORDER BY m3.created_at DESC
+                LIMIT 1
+            )
+            {"AND " + status_filter if status_filter else ""}
+        """
+        params = base_params + status_params
     
     async with get_db() as db:
         row = await fetch_one(db, query, params)

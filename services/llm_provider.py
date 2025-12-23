@@ -323,7 +323,7 @@ class GeminiProvider(LLMProvider):
         prompt: str,
         system: Optional[str] = None,
         json_mode: bool = False,
-        max_tokens: int = 600,
+        max_tokens: int = 1024,  # Increased from 600 for fuller Arabic responses
         temperature: float = 0.3
     ) -> Optional[LLMResponse]:
         if not self.is_available:
@@ -333,7 +333,7 @@ class GeminiProvider(LLMProvider):
         
         for attempt in range(self.config.max_retries):
             try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
+                async with httpx.AsyncClient(timeout=120.0) as client:  # Increased from 60s for complete generation
                     # Gemini uses different structure
                     full_prompt = f"{system}\n\n{prompt}" if system else prompt
                     

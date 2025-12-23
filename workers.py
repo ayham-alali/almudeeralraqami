@@ -658,23 +658,34 @@ class MessagePoller:
         except Exception as e:
             logger.error(f"Error polling Telegram phone for license {license_id}: {e}", exc_info=True)
     
-    def _get_message_hash(self, body: str, sender: Optional[str] = None) -> str:
+    def _get_message_hash(self, body: str, sender: Optional[str] = None, channel_message_id: Optional[str] = None) -> str:
         """
-        Create a hash to detect duplicate/similar messages.
-        Uses first 500 chars of body to reduce false negatives from signatures.
+        Create a hash to detect duplicate messages.
+        Uses channel_message_id if available (exact duplicate), otherwise full body + sender.
         """
-        content = f"{sender or 'unknown'}:{body[:500].strip().lower()}"
+        if channel_message_id:
+            # Exact duplicate detection using platform message ID
+            content = f"msg_id:{channel_message_id}"
+        else:
+            # Fallback to full body hash (for platforms without message IDs)
+            content = f"{sender or 'unknown'}:{body.strip().lower()}"
         return hashlib.md5(content.encode()).hexdigest()
     
-    def _is_duplicate_content(self, body: str, sender: Optional[str] = None) -> bool:
+    def _is_duplicate_content(self, body: str, sender: Optional[str] = None, channel_message_id: Optional[str] = None) -> bool:
         """
-        Check if we've recently processed a similar message.
-        This prevents duplicate AI calls for the same content.
+        Check if we've recently processed the EXACT same message.
+        Only returns True if channel_message_id matches (same message received twice).
+        Different messages with similar content are NOT considered duplicates.
         """
-        msg_hash = self._get_message_hash(body, sender)
+        # Only check for duplicates if we have a channel_message_id
+        # This prevents marking unique messages with similar content as duplicates
+        if not channel_message_id:
+            return False  # Can't determine duplicate without message ID
+        
+        msg_hash = self._get_message_hash(body, sender, channel_message_id)
         
         if msg_hash in self._processed_hashes:
-            logger.debug(f"Duplicate content detected, skipping AI: {msg_hash[:8]}...")
+            logger.debug(f"Exact duplicate message detected (same channel_message_id): {channel_message_id}")
             return True
         
         # Add to cache and limit size
@@ -710,13 +721,15 @@ class MessagePoller:
         auto_reply: bool,
         channel: str,
         recipient: Optional[str] = None,
-        sender_name: Optional[str] = None
+        sender_name: Optional[str] = None,
+        channel_message_id: Optional[str] = None
     ):
         """Analyze message with AI and optionally auto-reply"""
         try:
             # Check for duplicate content to avoid wasting AI quota
-            if self._is_duplicate_content(body, sender_name):
-                logger.info(f"Skipping AI for message {message_id}: duplicate content detected")
+            # Only exact duplicates (same channel_message_id) are skipped
+            if self._is_duplicate_content(body, sender_name, channel_message_id):
+                logger.info(f"Skipping AI for message {message_id}: exact duplicate (same channel_message_id)")
                 
                 # Mark as analyzed but indicating it was skipped to prevent retry loop
                 try:
