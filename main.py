@@ -321,6 +321,10 @@ app.include_router(auth_router)
 from health_check import router as health_router
 app.include_router(health_router)
 
+# Version check endpoint (public, for force-update system)
+from routes.version import router as version_router
+app.include_router(version_router)
+
 @app.get("/debug/routes")
 def list_all_routes():
     """List all registered routes for debugging"""

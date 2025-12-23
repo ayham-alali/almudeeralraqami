@@ -323,55 +323,63 @@ async def get_inbox_conversations(
     """
     Get inbox messages grouped by sender (chat-style view).
     Returns one row per sender with their latest message and stats.
+    
+    IMPORTANT: Status filter is applied to the LATEST message of each conversation,
+    not to all messages. This ensures conversations are grouped correctly before filtering.
     """
     from db_helper import DB_TYPE
     
-    # Build WHERE clause
-    where_clauses = ["license_key_id = ?"]
-    params = [license_id]
+    # Build base WHERE for license (always applied)
+    base_where = "license_key_id = ?"
+    base_params = [license_id]
     
-    if status == 'sent':
-        where_clauses.append("status IN ('approved', 'sent', 'auto_replied')")
-    elif status:
-        where_clauses.append("status = ?")
-        params.append(status)
-    
+    # Channel filter can be applied in base query
     if channel:
-        where_clauses.append("channel = ?")
-        params.append(channel)
+        base_where += " AND channel = ?"
+        base_params.append(channel)
     
-    where_sql = " AND ".join(where_clauses)
+    # Build status filter (applied AFTER grouping)
+    status_filter = ""
+    status_params = []
+    if status == 'sent':
+        status_filter = "status IN ('approved', 'sent', 'auto_replied')"
+    elif status:
+        status_filter = "status = ?"
+        status_params.append(status)
     
     # Use database-specific query for grouping
     if DB_TYPE == "postgresql":
+        # PostgreSQL: First get latest message per sender, THEN filter by status
         query = f"""
-            WITH ranked_messages AS (
-                SELECT *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY COALESCE(sender_contact, sender_id::text, 'unknown')
-                        ORDER BY created_at DESC
-                    ) as rn,
-                    COUNT(*) OVER (
-                        PARTITION BY COALESCE(sender_contact, sender_id::text, 'unknown')
+            WITH latest_per_sender AS (
+                SELECT DISTINCT ON (COALESCE(sender_contact, sender_id::text, 'unknown'))
+                    *,
+                    (SELECT COUNT(*) FROM inbox_messages m2 
+                     WHERE m2.license_key_id = inbox_messages.license_key_id 
+                     AND COALESCE(m2.sender_contact, m2.sender_id::text, 'unknown') = COALESCE(inbox_messages.sender_contact, inbox_messages.sender_id::text, 'unknown')
                     ) as message_count,
-                    SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) OVER (
-                        PARTITION BY COALESCE(sender_contact, sender_id::text, 'unknown')
+                    (SELECT COUNT(*) FROM inbox_messages m2 
+                     WHERE m2.license_key_id = inbox_messages.license_key_id 
+                     AND COALESCE(m2.sender_contact, m2.sender_id::text, 'unknown') = COALESCE(inbox_messages.sender_contact, inbox_messages.sender_id::text, 'unknown')
+                     AND m2.status = 'pending'
                     ) as unread_count
                 FROM inbox_messages
-                WHERE {where_sql}
+                WHERE {base_where}
+                ORDER BY COALESCE(sender_contact, sender_id::text, 'unknown'), created_at DESC
             )
             SELECT 
                 id, channel, sender_name, sender_contact, sender_id, subject, body,
                 intent, urgency, sentiment, language, dialect, ai_summary, ai_draft_response,
                 status, created_at, received_at,
                 message_count, unread_count
-            FROM ranked_messages
-            WHERE rn = 1
+            FROM latest_per_sender
+            {"WHERE " + status_filter if status_filter else ""}
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
         """
+        params = base_params + status_params + [limit, offset]
     else:
-        # SQLite version - simpler approach using GROUP BY
+        # SQLite version - get latest message per sender, then filter by status
         query = f"""
             SELECT 
                 m.*,
@@ -385,7 +393,7 @@ async def get_inbox_conversations(
                  AND m2.status = 'pending'
                 ) as unread_count
             FROM inbox_messages m
-            WHERE {where_sql}
+            WHERE {base_where}
             AND m.id = (
                 SELECT m3.id FROM inbox_messages m3
                 WHERE m3.license_key_id = m.license_key_id
@@ -393,11 +401,11 @@ async def get_inbox_conversations(
                 ORDER BY m3.created_at DESC
                 LIMIT 1
             )
+            {"AND " + status_filter if status_filter else ""}
             ORDER BY m.created_at DESC
             LIMIT ? OFFSET ?
         """
-    
-    params.extend([limit, offset])
+        params = base_params + status_params + [limit, offset]
     
     async with get_db() as db:
         rows = await fetch_all(db, query, params)
