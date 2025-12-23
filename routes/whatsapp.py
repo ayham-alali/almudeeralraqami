@@ -2,9 +2,9 @@
 Al-Mudeer - WhatsApp Business Integration Routes
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Request, Response
-from pydantic import BaseModel, Field
-from typing import Optional
+import base64
+import os
+from fastapi import APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks
 
 from services.whatsapp_service import (
     WhatsAppService,
@@ -277,6 +277,20 @@ async def receive_webhook(request: Request):
                     if msg.get("type") == "status":
                         continue  # Skip status updates for now
                     
+                    # Media Handling
+                    attachments = []
+                    if msg.get("media_id"):
+                        try:
+                            content = await service.download_media(msg["media_id"])
+                            if content:
+                                attachments.append({
+                                    "type": msg.get("type", "image"),
+                                    "base64": base64.b64encode(content).decode('utf-8'),
+                                    "file_id": msg["media_id"]
+                                })
+                        except Exception as e:
+                            print(f"Error downloading WhatsApp media: {e}")
+
                     # Save to inbox
                     inbox_id = await save_inbox_message(
                         license_id=license_id,
@@ -286,17 +300,17 @@ async def receive_webhook(request: Request):
                         sender_name=msg.get("sender_name"),
                         sender_contact=msg.get("sender_phone"),
                         body=msg.get("body", ""),
-                        received_at=msg.get("timestamp")
+                        received_at=msg.get("timestamp"),
+                        attachments=attachments
                     )
 
                     # Analyze with AI (WhatsApp auto-analysis; auto-reply can be added later)
                     try:
-                        from routes.integrations import analyze_inbox_message  # local import to avoid cycles
-                        from models import get_whatsapp_config
-                        from fastapi import BackgroundTasks
-
+                        from routes.core_integrations import analyze_inbox_message  # local import to avoid cycles
+                        from models import get_whatsapp_config 
+                        
                         # Determine auto_reply from config if available
-                        config = await get_whatsapp_config(license_id)
+                        # config is already available above as 'config' variable
                         auto_reply_enabled = bool(config and config.get("auto_reply_enabled"))
 
                         background_tasks = BackgroundTasks()
@@ -306,6 +320,8 @@ async def receive_webhook(request: Request):
                             msg.get("body", ""),
                             license_id,
                             auto_reply_enabled,
+                            None, # telegram_chat_id
+                            attachments # Pass attachments
                         )
                     except Exception as e:
                         print(f"WhatsApp auto-analysis scheduling failed: {e}")

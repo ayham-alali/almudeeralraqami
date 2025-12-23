@@ -6,11 +6,35 @@ Optimized for low bandwidth with text-only responses
 
 import json
 import re
-from typing import TypedDict, Literal, Optional, Dict, Any
+from typing import TypedDict, Literal, Optional, Dict, Any, List
 from models import update_daily_analytics
 from dataclasses import dataclass
 import httpx
 import os
+import asyncio
+
+# Helper to fetch URL content
+async def fetch_url_content(url: str) -> Optional[str]:
+    """Fetch content from a URL (max 2000 chars)"""
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            
+            # Simple cleanup - remove HTML tags roughly
+            text = resp.text
+            # Remove scripts and styles
+            text = re.sub(r'<script.*?>.*?</script>', '', text, flags=re.DOTALL)
+            text = re.sub(r'<style.*?>.*?</style>', '', text, flags=re.DOTALL)
+            # Remove tags
+            text = re.sub(r'<[^>]+>', ' ', text)
+            # Compress whitespace
+            text = re.sub(r'\s+', ' ', text).strip()
+            
+            return text[:2000] # Limit context size
+    except Exception as e:
+        print(f"Failed to fetch URL {url}: {e}")
+        return None
 
 # LangGraph imports
 from langgraph.graph import StateGraph, END
@@ -113,6 +137,9 @@ class AgentState(TypedDict):
     preferences: Optional[Dict[str, Any]]
     # Recent conversation history (plain text)
     conversation_history: Optional[str]
+    
+    # Multimodal support
+    attachments: Optional[List[Dict[str, Any]]]
 
 
 async def call_llm(
@@ -120,6 +147,7 @@ async def call_llm(
     system: Optional[str] = None,
     json_mode: bool = False,
     max_tokens: int = 600,
+    attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[str]:
     """
     Call LLM using multi-provider service with automatic failover.
@@ -144,7 +172,8 @@ async def call_llm(
             system=effective_system,
             json_mode=json_mode,
             max_tokens=max_tokens,
-            temperature=0.3
+            temperature=0.3,
+            attachments=attachments
         )
         
         return response
@@ -365,6 +394,24 @@ async def ingest_node(state: AgentState) -> AgentState:
             state["message_type"] = "whatsapp"
         else:
             state["message_type"] = "general"
+            
+    # Link Browsing: Detect and fetch URLs
+    # Pattern for http/https URLs
+    url_pattern = r'https?://[^\s<>"]+|www\.[^\s<>"]+'
+    urls = re.findall(url_pattern, raw)
+    
+    if urls:
+        # Fetch first URL only to save tokens/time
+        url = urls[0]
+        print(f"Detected URL: {url} - fetching content...")
+        
+        # We need to run this async, but ingest_node is async so it fits
+        content = await fetch_url_content(url)
+        
+        if content:
+            # Append to raw message as context for subsequent nodes
+            state["raw_message"] += f"\n\n[System: Content fetching from {url}]\n{content}"
+            print(f"Added {len(content)} chars of context from URL")
     
     return state
 
@@ -399,6 +446,7 @@ async def classify_node(state: AgentState) -> AgentState:
         prompt,
         system=build_system_prompt(state.get("preferences")),
         json_mode=True,
+        attachments=state.get("attachments")
     )
     
     if llm_response:
@@ -603,6 +651,7 @@ async def draft_node(state: AgentState) -> AgentState:
         system=build_system_prompt(state.get("preferences")),
         json_mode=False,
         max_tokens=1200,  # Arabic needs more tokens - increased from 800
+        attachments=state.get("attachments")
     )
     
     # Lower threshold to 15 - accept short but valid responses
@@ -705,8 +754,10 @@ async def process_message(
     message_type: str = None,
     sender_name: str = None,
     sender_contact: str = None,
+    sender_city: str = None,
     preferences: Optional[Dict[str, Any]] = None,
     conversation_history: Optional[str] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> dict:
     """Process a message through the InboxCRM pipeline"""
     
@@ -730,7 +781,9 @@ async def process_message(
         "error": None,
         "processing_step": "",
         "preferences": preferences,
+        "preferences": preferences,
         "conversation_history": conversation_history,
+        "attachments": attachments,
     }
     
     try:

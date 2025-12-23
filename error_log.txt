@@ -1,0 +1,7 @@
+test_exclude_ids (verify_media.TestTelegramMedia.test_exclude_ids) ... ok
+test_media_download (verify_media.TestTelegramMedia.test_media_download) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.045s
+
+OK

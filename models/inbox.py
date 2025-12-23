@@ -18,7 +18,8 @@ async def save_inbox_message(
     sender_id: str = None,
     subject: str = None,
     channel_message_id: str = None,
-    received_at: datetime = None
+    received_at: datetime = None,
+    attachments: Optional[List[dict]] = None
 ) -> int:
     """Save incoming message to inbox (SQLite & PostgreSQL compatible)."""
 
@@ -44,14 +45,24 @@ async def save_inbox_message(
     else:
         ts_value = received.isoformat()
 
+    # Serialize attachments
+    import json
+    attachments_json = json.dumps(attachments) if attachments else None
+
     async with get_db() as db:
+        # Check if attachments column exists (simplified migration)
+        try:
+             await execute_sql(db, "ALTER TABLE inbox_messages ADD COLUMN attachments TEXT")
+        except:
+             pass # Column likely exists
+
         await execute_sql(
             db,
             """
             INSERT INTO inbox_messages 
                 (license_key_id, channel, channel_message_id, sender_id, sender_name,
-                 sender_contact, subject, body, received_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 sender_contact, subject, body, received_at, attachments)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 license_id,
@@ -63,6 +74,7 @@ async def save_inbox_message(
                 subject,
                 body,
                 ts_value,
+                attachments_json
             ],
         )
 

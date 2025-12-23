@@ -18,9 +18,19 @@ from telethon.errors import (
     ApiIdInvalidError
 )
 import json
+import json
 import base64
+import io
 
-
+# MIME type mapping for Telegram media
+def get_mime_type(file_ext: str) -> str:
+    ext = file_ext.lower().replace('.', '')
+    if ext in ['jpg', 'jpeg']: return 'image/jpeg'
+    if ext == 'png': return 'image/png'
+    if ext == 'webp': return 'image/webp'
+    if ext in ['mp3', 'm4a', 'ogg']: return 'audio/ogg' # Generalize for voice
+    if ext == 'wav': return 'audio/wav'
+    return 'application/octet-stream'
 class TelegramPhoneService:
     """Service for Telegram MTProto client (phone number authentication)"""
     
@@ -290,7 +300,8 @@ class TelegramPhoneService:
         self,
         session_string: str,
         limit: int = 50,
-        since_hours: int = 72
+        since_hours: int = 72,
+        exclude_ids: Optional[List[str]] = None
     ) -> List[Dict]:
         """
         Get recent messages from Telegram account (INCOMING only)
@@ -298,7 +309,9 @@ class TelegramPhoneService:
         Args:
             session_string: Session string
             limit: Maximum number of messages to fetch
+            limit: Maximum number of messages to fetch
             since_hours: Only fetch messages from last N hours
+            exclude_ids: Optional list of message IDs to skip (bandwidth optimization)
         
         Returns:
             List of message dicts (only incoming messages from other users)
@@ -339,8 +352,15 @@ class TelegramPhoneService:
                         dialog.entity,
                         limit=20,  # Get more to filter
                     ):
-                        # Skip messages without text
-                        if not message.text:
+                        msg_id_str = str(message.id)
+                        
+                        # Optimization: Skip if ID is in exclude list (already processed)
+                        if exclude_ids and msg_id_str in exclude_ids:
+                            continue
+
+                        # Skip messages without text AND without media
+                        # We want text OR media (or both)
+                        if not message.text and not message.media:
                             continue
                         
                         # CRITICAL: Skip outgoing messages (our own sent messages)
@@ -373,11 +393,45 @@ class TelegramPhoneService:
                             "sender_id": str(sender.id) if sender else None,
                             "sender_name": sender_name or sender_contact.split('@')[0] if sender_contact else "Unknown",
                             "sender_contact": sender_contact,
-                            "body": message.text,
+                            "body": message.text or "", # Allow empty body if media present
                             "subject": None,
                             "received_at": message.date,
                             "chat_id": str(dialog.id),
+                            "attachments": []
                         })
+                        
+                        # Handle Media (Photo/Voice)
+                        if message.media:
+                            try:
+                                # Skip huge files to prevent memory issues > 5MB
+                                if hasattr(message.media, "document") and message.media.document.size > 5 * 1024 * 1024:
+                                    logger.warning(f"Skipping large media file in message {message.id}")
+                                    continue
+                                    
+                                # Download media to memory
+                                file_bytes = await message.download_media(file=bytes)
+                                
+                                if file_bytes:
+                                    # Detect content type
+                                    mime_type = "application/octet-stream"
+                                    if hasattr(message.media, "photo"):
+                                        mime_type = "image/jpeg"
+                                    elif hasattr(message.media, "document"):
+                                        mime_type = message.media.document.mime_type
+                                        
+                                    # Encode to base64
+                                    b64_data = base64.b64encode(file_bytes).decode('utf-8')
+                                    
+                                    # Add to attachments
+                                    messages_data[-1]["attachments"].append({
+                                        "type": mime_type,
+                                        "base64": b64_data,
+                                        "filename": f"file_{message.id}"
+                                    })
+                                    logger.debug(f"Downloaded media for message {message.id} ({len(file_bytes)} bytes)")
+                                    
+                            except Exception as media_e:
+                                logger.error(f"Failed to download media for message {message.id}: {media_e}")
                 
                 except Exception as e:
                     # Skip this dialog if error

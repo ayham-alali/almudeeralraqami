@@ -13,10 +13,12 @@ class TelegramService:
     """Service for Telegram Bot API interactions"""
     
     BASE_URL = "https://api.telegram.org/bot"
+    FILE_BASE_URL = "https://api.telegram.org/file/bot"
     
     def __init__(self, bot_token: str):
         self.bot_token = bot_token
         self.api_url = f"{self.BASE_URL}{bot_token}"
+        self.file_url = f"{self.FILE_BASE_URL}{bot_token}"
     
     async def _request(self, method: str, data: dict = None) -> dict:
         """Make request to Telegram Bot API"""
@@ -56,6 +58,22 @@ class TelegramService:
     async def get_webhook_info(self) -> dict:
         """Get current webhook info"""
         return await self._request("getWebhookInfo")
+    
+    async def get_file(self, file_id: str) -> dict:
+        """Get file info (path) from file_id"""
+        return await self._request("getFile", {"file_id": file_id})
+        
+    async def download_file(self, file_path: str) -> Optional[bytes]:
+        """Download file content"""
+        url = f"{self.file_url}/{file_path}"
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                return response.content
+        except Exception as e:
+            print(f"Error downloading file {file_path}: {e}")
+            return None
     
     async def send_message(
         self,
@@ -105,6 +123,50 @@ class TelegramService:
         chat = message.get("chat", {})
         from_user = message.get("from", {})
         
+        # Media extraction
+        attachments = []
+        
+        # Photos (get largest)
+        if message.get("photo"):
+            # Photos are list of sizes, last one is largest
+            largest = message["photo"][-1]
+            attachments.append({
+                "type": "photo",
+                "file_id": largest["file_id"],
+                "file_size": largest.get("file_size", 0)
+            })
+            
+        # Voice
+        if message.get("voice"):
+            voice = message["voice"]
+            attachments.append({
+                "type": "voice", 
+                "file_id": voice["file_id"],
+                "mime_type": voice.get("mime_type", "audio/ogg"),
+                "file_size": voice.get("file_size", 0)
+            })
+            
+        # Audio
+        if message.get("audio"):
+            audio = message["audio"]
+            attachments.append({
+                "type": "audio",
+                "file_id": audio["file_id"],
+                "mime_type": audio.get("mime_type", "audio/mpeg"),
+                "file_size": audio.get("file_size", 0)
+            })
+            
+        # Document
+        if message.get("document"):
+            doc = message["document"]
+            attachments.append({
+                "type": "document",
+                "file_id": doc["file_id"],
+                "mime_type": doc.get("mime_type", "application/octet-stream"),
+                "file_size": doc.get("file_size", 0),
+                "file_name": doc.get("file_name")
+            })
+
         return {
             "update_id": update.get("update_id"),
             "message_id": message.get("message_id"),
@@ -114,9 +176,10 @@ class TelegramService:
             "username": from_user.get("username"),
             "first_name": from_user.get("first_name", ""),
             "last_name": from_user.get("last_name", ""),
-            "text": message.get("text", ""),
+            "text": message.get("text", "") or message.get("caption", ""), # Use caption if text is empty
             "date": datetime.fromtimestamp(message.get("date", 0)),
-            "is_bot": from_user.get("is_bot", False)
+            "is_bot": from_user.get("is_bot", False),
+            "attachments": attachments
         }
 
 

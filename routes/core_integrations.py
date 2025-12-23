@@ -5,6 +5,7 @@ Email & Telegram configuration and inbox management
 
 import os
 import html
+import base64
 from fastapi import APIRouter, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
@@ -40,7 +41,7 @@ from models import (
     get_whatsapp_config,
     get_customer_for_message,
 )
-from services import EmailService, EMAIL_PROVIDERS, TelegramService, TELEGRAM_SETUP_GUIDE, GmailOAuthService, GmailAPIService, TelegramPhoneService
+from services import EmailService, EMAIL_PROVIDERS, TelegramService, TelegramBotManager, TELEGRAM_SETUP_GUIDE, GmailOAuthService, GmailAPIService, TelegramPhoneService
 from models import get_email_oauth_tokens
 from agent import process_message
 from workers import get_worker_status
@@ -1124,6 +1125,31 @@ async def telegram_webhook(
     sender_contact = parsed["username"] if parsed["username"] else f"tg:{parsed['user_id']}"
     sender_name = f"{parsed['first_name']} {parsed['last_name']}".strip() or f"Telegram User"
     
+    # Prepare attachments if any
+    attachments = parsed.get("attachments", [])
+    
+    # Download media if present
+    if attachments:
+        try:
+            bot = TelegramBotManager.get_bot(license_id, config["bot_token"])
+            for att in attachments:
+                if att.get("file_id"):
+                    # Get file path
+                    file_info = await bot.get_file(att["file_id"])
+                    if file_info and file_info.get("file_path"):
+                        # Download content
+                        content = await bot.download_file(file_info["file_path"])
+                        if content:
+                            if len(content) > 5 * 1024 * 1024: # 5MB limit
+                                logger.warning(f"File too large: {len(content)} bytes")
+                                continue
+                            
+                            # Convert to base64
+                            att["base64"] = base64.b64encode(content).decode('utf-8')
+                            logger.info(f"Downloaded media {att['type']} ({len(content)} bytes)")
+        except Exception as e:
+            logger.error(f"Failed to download telegram media: {e}")
+
     msg_id = await save_inbox_message(
         license_id=license_id,
         channel="telegram_bot",
@@ -1132,7 +1158,8 @@ async def telegram_webhook(
         sender_contact=sender_contact,
         sender_id=parsed["user_id"],
         channel_message_id=str(parsed["message_id"]),
-        received_at=parsed["date"]
+        received_at=parsed["date"],
+        attachments=attachments 
     )
     logger.info(f"Telegram message saved with id {msg_id}")
     
@@ -1143,7 +1170,8 @@ async def telegram_webhook(
         parsed["text"],
         license_id,
         config.get("auto_reply_enabled", False),
-        parsed["chat_id"]
+        parsed["chat_id"],
+        attachments # Pass attachments to analysis
     )
     
     return {"ok": True}
@@ -1491,12 +1519,16 @@ async def analyze_inbox_message(
     body: str,
     license_id: int,
     auto_reply: bool = False,
-    telegram_chat_id: str = None
+    telegram_chat_id: str = None,
+    attachments: Optional[List[dict]] = None
 ):
     """Analyze message with AI and optionally auto-reply"""
     try:
         # Process with AI
-        result = await process_message(body)
+        result = await process_message(
+            message=body,
+            attachments=attachments
+        )
 
         if result["success"]:
             data = result["data"]

@@ -7,8 +7,9 @@ import asyncio
 import os
 import random
 import hashlib
+import base64
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Set
+from typing import Optional, Dict, List, Set, Any
 
 from logging_config import get_logger
 from db_helper import (
@@ -496,6 +497,21 @@ class MessagePoller:
                     logger.info(f"Message filtered: {filter_reason}")
                     continue
                 
+                # Process attachments
+                attachments = email_data.get("attachments", [])
+                for att in attachments:
+                    try:
+                        # Download attachment data (if not already present)
+                        if att.get("file_id") and not att.get("base64"):
+                            data = await gmail_service.get_attachment_data(
+                                email_data.get("channel_message_id"), 
+                                att["file_id"]
+                            )
+                            if data:
+                                att["base64"] = base64.b64encode(data).decode("utf-8")
+                    except Exception as e:
+                        logger.warning(f"Failed to download email attachment {att.get('file_name')}: {e}")
+
                 # Save to inbox
                 msg_id = await save_inbox_message(
                     license_id=license_id,
@@ -503,20 +519,24 @@ class MessagePoller:
                     body=email_data["body"],
                     sender_name=email_data["sender_name"],
                     sender_contact=email_data["sender_contact"],
+                    sender_id=None,
                     subject=email_data.get("subject"),
                     channel_message_id=email_data.get("channel_message_id"),
-                    received_at=email_data.get("received_at")
+                    received_at=email_data.get("received_at"),
+                    attachments=attachments
                 )
                 
                 # Analyze with AI
                 await self._analyze_and_process_message(
-                    msg_id,
-                    email_data["body"],
-                    license_id,
-                    config.get("auto_reply_enabled", False),
-                    "email",
-                    email_data.get("sender_contact"),
-                    email_data.get("sender_name")
+                    message_id=msg_id,
+                    body=email_data["body"],
+                    license_id=license_id,
+                    auto_reply=config.get("auto_reply_enabled", False),
+                    channel="email",
+                    recipient=email_data.get("sender_contact"),
+                    sender_name=email_data.get("sender_name"),
+                    channel_message_id=email_data.get("channel_message_id"),
+                    attachments=attachments
                 )
             
             # Update last_checked_at
@@ -570,13 +590,21 @@ class MessagePoller:
 
             phone_service = TelegramPhoneService()
 
-            # Fetch recent messages from Telegram phone account
-            # Limit to 200 to capture enough messages per poll
+            # Get recent inbox messages for duplicate detection
+            # Use higher limit to avoid missing duplicates when inbox is large
+            recent_limit = 200
+            recent_messages = await get_inbox_messages(license_id, limit=recent_limit)
+
+            # Extract exclude_ids for optimization
+            exclude_ids = [msg["channel_message_id"] for msg in recent_messages if msg.get("channel_message_id")]
+
+            # Fetch messages with optimization
             try:
                 messages = await phone_service.get_recent_messages(
                     session_string=session_string,
                     since_hours=since_hours,
                     limit=200,
+                    exclude_ids=exclude_ids
                 )
             except Exception as e:
                 # If the underlying Telethon client or session is invalid, avoid
@@ -599,12 +627,13 @@ class MessagePoller:
             if not messages:
                 return
 
-            # Get recent inbox messages for duplicate detection
-            # Use higher limit to avoid missing duplicates when inbox is large
-            recent_messages = await get_inbox_messages(license_id, limit=500)
-
+            # Group messages by sender for burst handling
+            # Structure: {sender_contact: [msg_data, ...]}
+            grouped_messages: Dict[str, List[Dict]] = {}
+            saved_messages_map: Dict[str, int] = {}  # channel_message_id -> db_id
+            
             for msg in messages:
-                # Check if we already have this message
+                # Check existance
                 existing = await self._check_existing_message(
                     license_id, "telegram", msg.get("channel_message_id")
                 )
@@ -628,7 +657,7 @@ class MessagePoller:
                     logger.info(f"Telegram phone message filtered: {filter_reason}")
                     continue
 
-                # Save to inbox as Telegram channel
+                # Save to inbox
                 msg_id = await save_inbox_message(
                     license_id=license_id,
                     channel="telegram",
@@ -639,18 +668,92 @@ class MessagePoller:
                     subject=msg.get("subject"),
                     channel_message_id=msg.get("channel_message_id"),
                     received_at=msg.get("received_at"),
+                    attachments=msg.get("attachments")
                 )
+                
+                # Add to map and groups
+                saved_messages_map[msg["channel_message_id"]] = msg_id
+                
+                sender_key = msg.get("sender_contact") or "unknown"
+                if sender_key not in grouped_messages:
+                    grouped_messages[sender_key] = []
+                
+                # Store msg data with DB ID
+                msg["db_id"] = msg_id
+                grouped_messages[sender_key].append(msg)
 
-                # Analyze with AI (auto-reply disabled by default for phone sessions)
-                await self._analyze_and_process_message(
-                    msg_id,
-                    msg["body"],
-                    license_id,
-                    False,  # auto_reply for Telegram phone can be added later
-                    "telegram",
-                    msg.get("sender_contact"),
-                    msg.get("sender_name")
-                )
+            # Process groups (Burst Handling)
+            for sender_key, group in grouped_messages.items():
+                if not group:
+                    continue
+                
+                # Sort by time (oldest first) to reconstruct conversation
+                group.sort(key=lambda x: x.get("received_at", datetime.min))
+                
+                if len(group) == 1:
+                    # Single message case
+                    msg = group[0]
+                    await self._analyze_and_process_message(
+                        msg["db_id"],
+                        msg["body"],
+                        license_id,
+                        False, 
+                        "telegram",
+                        msg.get("sender_contact"),
+                        msg.get("sender_name"),
+                        msg.get("channel_message_id"),
+                        attachments=msg.get("attachments")
+                    )
+                else:
+                    # Burst case - merge messages
+                    # We process only the LATEST message, but include context from others
+                    latest_msg = group[-1]
+                    
+                    # Combine bodies
+                    combined_body = ""
+                    for m in group:
+                        timestamp = m.get("received_at").strftime("%H:%M") if m.get("received_at") else ""
+                        body_text = m['body'] or "[ملف مرفق]"
+                        combined_body += f"[{timestamp}] {body_text}\n"
+                    
+                    combined_body = combined_body.strip()
+                    logger.info(f"Burst detected for {sender_key}: merged {len(group)} messages")
+                    
+                    # Mark previous messages as 'analyzed' with special note
+                    for m in group[:-1]:
+                        # Use update_inbox_analysis to set status without triggering AI
+                        try:
+                            await update_inbox_analysis(
+                                message_id=m["db_id"],
+                                intent="merged",
+                                urgency="low",
+                                sentiment="neutral",
+                                language=None,
+                                dialect=None,
+                                summary="تم دمج الرسالة مع الرد التالي",
+                                draft_response="➡️ تم الرد في الرسالة التالية (سياق متصل)"
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to mark merged message {m['db_id']}: {e}")
+
+                    # Process the latest message with combined context
+                    # Pass original attachments from ALL messages
+                    all_attachments = []
+                    for m in group:
+                        if m.get("attachments"): 
+                            all_attachments.extend(m["attachments"])
+                    
+                    await self._analyze_and_process_message(
+                        latest_msg["db_id"],
+                        combined_body, # Use combined body for AI understanding
+                        license_id,
+                        False,
+                        "telegram",
+                        latest_msg.get("sender_contact"),
+                        latest_msg.get("sender_name"),
+                        latest_msg.get("channel_message_id"),
+                        attachments=all_attachments
+                    )
 
             # Update last sync time
             await update_telegram_phone_session_sync_time(license_id)
@@ -722,7 +825,8 @@ class MessagePoller:
         channel: str,
         recipient: Optional[str] = None,
         sender_name: Optional[str] = None,
-        channel_message_id: Optional[str] = None
+        channel_message_id: Optional[str] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None
     ):
         """Analyze message with AI and optionally auto-reply"""
         try:
@@ -776,14 +880,17 @@ class MessagePoller:
                 # Use semaphore to limit global concurrency for free LLM tiers
                 async with self.ai_semaphore:
                     # Add timeout to prevent hanging if AI service stalls
+                    # increased from 60s to 360s (6min) to allow for rate limit handling
+                    # Gemini free tier retries can take several minutes
                     result = await asyncio.wait_for(
                         process_message(
                             message=body,
                             sender_name=sender_name,
                             sender_contact=recipient,
-                            conversation_history=conversation_history
+                            conversation_history=conversation_history,
+                            attachments=attachments
                         ),
-                        timeout=60.0
+                        timeout=360.0
                     )
             except asyncio.TimeoutError:
                 logger.warning(f"AI processing timed out for message {message_id} - will retry next cycle")

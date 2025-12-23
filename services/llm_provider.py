@@ -172,7 +172,8 @@ class LLMProvider(ABC):
         system: Optional[str] = None,
         json_mode: bool = False,
         max_tokens: int = 600,
-        temperature: float = 0.3
+        temperature: float = 0.3,
+        attachments: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[LLMResponse]:
         pass
 
@@ -226,6 +227,19 @@ class OpenAIProvider(LLMProvider):
                         "temperature": temperature,
                         "max_tokens": max_tokens,
                     }
+
+                    # Add attachments for OpenAI (GPT-4 Vision)
+                    if attachments:
+                        content_parts = [{"type": "text", "text": prompt}]
+                        for att in attachments:
+                            if att.get("type", "").startswith("image/"):
+                                # OpenAI expects base64 or URL
+                                if "url" in att:
+                                    content_parts.append({
+                                        "type": "image_url",
+                                        "image_url": {"url": att["url"]}
+                                    })
+                        body["messages"][1]["content"] = content_parts
                     
                     if json_mode:
                         body["response_format"] = {"type": "json_object"}
@@ -337,12 +351,30 @@ class GeminiProvider(LLMProvider):
                     # Gemini uses different structure
                     full_prompt = f"{system}\n\n{prompt}" if system else prompt
                     
+                    parts = [{"text": full_prompt}]
+                    
+                    # Add attachments for Gemini
+                    if attachments:
+                        for att in attachments:
+                            mime_type = att.get("type", "")
+                            # Support image and audio
+                            if mime_type.startswith("image/") or mime_type.startswith("audio/"):
+                                # If we have direct file data (base64)
+                                if "base64" in att:
+                                    parts.append({
+                                        "inlineData": {
+                                            "mimeType": mime_type,
+                                            "data": att["base64"] 
+                                        }
+                                    })
+                                # If we have a public URL, Gemini might need it downloaded first
+                                # For now, we assume the caller handles downloading or provides base64
+                                # Alternatively, fileData can be used if uploaded to File API, but that requires extra steps.
+                    
                     body = {
                         "contents": [
                             {
-                                "parts": [
-                                    {"text": full_prompt}
-                                ]
+                                "parts": parts
                             }
                         ],
                         "generationConfig": {
@@ -567,7 +599,8 @@ class LLMService:
         json_mode: bool = False,
         max_tokens: int = 600,
         temperature: float = 0.3,
-        use_cache: bool = True
+        use_cache: bool = True,
+        attachments: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[LLMResponse]:
         """
         Generate a response using available providers with automatic failover.
@@ -586,7 +619,8 @@ class LLMService:
         self.stats["total_requests"] += 1
         
         # Check cache first
-        if self.cache and use_cache:
+        # Disable cache if attachments are present (content might differ even if prompt is same)
+        if self.cache and use_cache and not attachments:
             cached = await self.cache.get(prompt, system)
             if cached:
                 self.stats["cache_hits"] += 1
@@ -610,7 +644,8 @@ class LLMService:
                 system=system,
                 json_mode=json_mode,
                 max_tokens=max_tokens,
-                temperature=temperature
+                temperature=temperature,
+                attachments=attachments
             )
             
             if response and response.content:
@@ -670,7 +705,8 @@ async def llm_generate(
     system: Optional[str] = None,
     json_mode: bool = False,
     max_tokens: int = 600,
-    temperature: float = 0.3
+    temperature: float = 0.3,
+    attachments: Optional[List[Dict[str, Any]]] = None
 ) -> Optional[str]:
     """
     Convenience function for generating LLM responses.
@@ -689,7 +725,8 @@ async def llm_generate(
             system=system,
             json_mode=json_mode,
             max_tokens=max_tokens,
-            temperature=temperature
+            temperature=temperature,
+            attachments=attachments
         )
         
         # Add post-request delay to prevent burst rate limits

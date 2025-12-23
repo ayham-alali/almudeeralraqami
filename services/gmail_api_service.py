@@ -126,6 +126,16 @@ class GmailAPIService:
             Message object
         """
         return await self._request("GET", f"users/me/messages/{message_id}?format={format}")
+
+    async def get_attachment_data(self, message_id: str, attachment_id: str) -> Optional[bytes]:
+        """Download attachment content"""
+        try:
+            data = await self._request("GET", f"users/me/messages/{message_id}/attachments/{attachment_id}")
+            if data and "data" in data:
+                return base64.urlsafe_b64decode(data["data"])
+        except Exception as e:
+            print(f"Error downloading attachment {attachment_id}: {e}")
+        return None
     
     async def send_message(
         self,
@@ -239,6 +249,9 @@ class GmailAPIService:
             received_at = parsedate_to_datetime(date_str)
         except:
             received_at = datetime.now()
+
+        # Extract attachments metadata
+        attachments = self._extract_attachments_meta(payload)
         
         return {
             "channel_message_id": message.get("id"),
@@ -248,6 +261,7 @@ class GmailAPIService:
             "body": body,
             "received_at": received_at,
             "raw_from": from_header,
+            "attachments": attachments
         }
     
     def _extract_email_address(self, from_header: str) -> str:
@@ -299,4 +313,28 @@ class GmailAPIService:
                     body = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
         
         return body.strip()
+
+    def _extract_attachments_meta(self, payload: Dict) -> List[Dict]:
+        """Extract attachment metadata from payload"""
+        attachments = []
+        parts = payload.get("parts", [])
+        
+        # Helper to recurse
+        def scan_parts(parts_list):
+            for part in parts_list:
+                if part.get("filename") and part.get("body", {}).get("attachmentId"):
+                    attachments.append({
+                        "file_id": part["body"]["attachmentId"],
+                        "file_name": part["filename"],
+                        "mime_type": part.get("mimeType"),
+                        "file_size": part["body"].get("size", 0),
+                        "type": "document" # Generic type
+                    })
+                
+                # Recurse if multipart
+                if part.get("parts"):
+                    scan_parts(part["parts"])
+        
+        scan_parts(parts)
+        return attachments
 
