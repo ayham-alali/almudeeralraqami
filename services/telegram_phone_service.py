@@ -7,16 +7,15 @@ import asyncio
 import os
 from typing import Optional, Dict, Tuple, List
 from datetime import datetime
-from telethon import TelegramClient
-from telethon.sessions import StringSession
-from telethon.errors import (
-    PhoneCodeInvalidError,
-    PhoneCodeExpiredError,
-    SessionPasswordNeededError,
-    PhoneNumberUnoccupiedError,
-    FloodWaitError,
-    ApiIdInvalidError
-)
+# Telethon imports moved to methods to avoid import-time side effects
+# from telethon import TelegramClient
+# from telethon.sessions import StringSession
+# from telethon.errors import ...
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
 import json
 import json
 import base64
@@ -83,6 +82,10 @@ class TelegramPhoneService:
         # Use an in-memory StringSession and encode its state into a token that
         # the frontend sends back on verification. This makes the flow
         # stateless and resilient to multi-process deployments (Railway).
+        from telethon.sessions import StringSession
+        from telethon import TelegramClient
+        from telethon.errors import PhoneNumberUnoccupiedError, FloodWaitError
+        
         session = StringSession()
         client = TelegramClient(session, int(self.api_id), self.api_hash)
 
@@ -158,6 +161,14 @@ class TelegramPhoneService:
             raise ValueError("حدث تعارض في رقم الهاتف. يرجى طلب كود جديد")
 
         # Recreate client from stored StringSession
+        from telethon.sessions import StringSession
+        from telethon import TelegramClient
+        from telethon.errors import (
+            PhoneCodeInvalidError,
+            PhoneCodeExpiredError,
+            SessionPasswordNeededError
+        )
+
         session = StringSession(state.get("session") or "")
         client = TelegramClient(session, int(self.api_id), self.api_hash)
 
@@ -238,6 +249,9 @@ class TelegramPhoneService:
         try:
             # Use StringSession directly - no temp file needed
             # flood_sleep_threshold=0 means raise FloodWaitError immediately instead of sleeping
+            from telethon.sessions import StringSession
+            from telethon import TelegramClient
+            
             session = StringSession(session_string)
             client = TelegramClient(
                 session, 
