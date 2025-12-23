@@ -5,6 +5,8 @@ Al-Mudeer - WhatsApp Business Integration Routes
 import base64
 import os
 from fastapi import APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks
+from pydantic import BaseModel, Field
+from typing import Optional
 
 from services.whatsapp_service import (
     WhatsAppService,
