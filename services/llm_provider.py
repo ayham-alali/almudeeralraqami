@@ -477,15 +477,12 @@ class GeminiProvider(LLMProvider):
                         # CRITICAL: Report 429 to global rate limiter to extend cooldown
                         get_rate_limiter().report_rate_limit_hit()
                         
-                        if attempt < self.config.max_retries - 1:
-                            # Exponential backoff with jitter to prevent thundering herd
-                            delay = self.config.base_delay * (2 ** attempt) + random.uniform(0, 5)
-                            logger.warning(f"Gemini rate limited, retry {attempt + 1}/{self.config.max_retries} in {delay:.1f}s")
-                            await asyncio.sleep(delay)
-                            continue
-                        else:
-                            self._record_error()
-                            return None
+                        # DON'T RETRY INTERNALLY - return None immediately
+                        # The worker's retry mechanism will retry the whole message later,
+                        # going through wait_for_capacity() which respects the cooldown
+                        logger.warning(f"Gemini rate limited (429), cooldown set, will retry via worker")
+                        self._record_error()
+                        return None
                     
                     response.raise_for_status()
                     data = response.json()

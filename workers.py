@@ -319,7 +319,7 @@ class MessagePoller:
                           AND (ai_draft_response = $2 OR ai_draft_response IS NULL OR ai_draft_response = '')
                           AND created_at > NOW() - INTERVAL '24 hours'
                         ORDER BY created_at DESC
-                        LIMIT 5
+                        LIMIT 1
                     """
                 else:
                     query = """
@@ -329,7 +329,7 @@ class MessagePoller:
                           AND (ai_draft_response = ? OR ai_draft_response IS NULL OR ai_draft_response = '')
                           AND created_at > datetime('now', '-24 hours')
                         ORDER BY created_at DESC
-                        LIMIT 5
+                        LIMIT 1
                     """
                 rows = await fetch_all(db, query, [license_id, placeholder])
                 
