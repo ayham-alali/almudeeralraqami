@@ -39,7 +39,7 @@ class LLMConfig:
     
     # Provider 1: Google Gemini (PRIMARY - Free tier)
     google_api_key: str = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY", ""))
-    google_model: str = field(default_factory=lambda: os.getenv("GOOGLE_MODEL", "gemini-2.0-flash-exp"))
+    google_model: str = field(default_factory=lambda: os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"))
     
     # Provider 2: OpenRouter (BACKUP - Free models)
     openrouter_api_key: str = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY", ""))
@@ -49,8 +49,8 @@ class LLMConfig:
     
     # Retry settings - aggressive for rate limit handling
     # Gemini free tier has strict limits (15 RPM), so we wait MUCH longer between retries
-    max_retries: int = 5  # Increased from 3 for better recovery
-    base_delay: float = 20.0  # Aggressive delay: 20-40-80-160-320s exponential backoff
+    max_retries: int = 20  # increased to 20 for "Patient Retry"
+    base_delay: float = 30.0  # Increased delay: 30s+ to wait out congestion
     
     # Cache settings
     cache_enabled: bool = field(default_factory=lambda: os.getenv("LLM_CACHE_ENABLED", "true").lower() == "true")
@@ -601,9 +601,9 @@ class OpenRouterProvider(LLMProvider):
         # fallback models if primary rate limits (Free tier strategy)
         models_to_try = [
             self.config.openrouter_model,  # Primary from config
-            "google/gemini-2.0-flash-exp:free", # Standard flash exp (stable)
-            "google/gemini-2.0-pro-exp-02-05:free", # New stable pro exp
-            "meta-llama/llama-3.3-70b-instruct:free", # Fallback non-Google
+            "google/gemini-2.0-flash-exp:free", # User preferred
+            "google/gemini-2.0-pro-exp-02-05:free", # Pro fallback
+            "meta-llama/llama-3.3-70b-instruct:free", # High quality open weights
         ]
         
         # Max global timeout for all attempts
@@ -638,31 +638,48 @@ class OpenRouterProvider(LLMProvider):
                             json=body,
                         )
                         
-                        if response.status_code == 429:
-                            # If rate limited, immediately try next model if available
-                            logger.warning(f"OpenRouter 429 on {model}. Switching model...")
-                            # Add a small penalty delay to avoid hammering the API
-                            await asyncio.sleep(2)
-                            break # Break inner loop to try next model
-                        
-                        response.raise_for_status()
-                        data = response.json()
-                        
-                        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                        latency = int((time.time() - start_time) * 1000)
-                        
-                        self._error_count = 0
-                        
-                        return LLMResponse(
-                            content=content.strip(),
-                            provider=self.name,
-                            model=model,
-                            latency_ms=latency
-                        )
-                        
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 429:
+                        # If rate limited, immediately try next model
+                        logger.warning(f"OpenRouter 429 on {model}. Switching model...")
+                        await asyncio.sleep(2)
+                        break # Break inner loop to try next model
+                    
+                    if e.response.status_code == 400 and json_mode:
+                        # Smart Retry: Some models don't support json_mode (response_format)
+                        # We retry WITHOUT json_mode relying on the prompt to enforce JSON
+                        logger.warning(f"OpenRouter 400 on {model} with json_mode=True. Retrying without json_mode...")
+                        try:
+                            # Modify body to remove response_format
+                            if "response_format" in body:
+                                del body["response_format"]
+                            
+                            response = await client.post(
+                                self.OPENROUTER_API_URL,
+                                headers=headers,
+                                json=body,
+                            )
+                            response.raise_for_status()
+                            data = response.json()
+                            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                            latency = int((time.time() - start_time) * 1000)
+                            self._error_count = 0
+                            return LLMResponse(
+                                content=content.strip(),
+                                provider=self.name,
+                                model=model,
+                                latency_ms=latency
+                            )
+                        except Exception as retry_e:
+                            logger.error(f"Smart Retry failed on {model}: {retry_e}")
+                            break # Move to next model
+                    
+                    logger.warning(f"OpenRouter HTTP {e.response.status_code} on {model}: {e}")
+                    break # Move to next model
+
                 except Exception as e:
                     logger.warning(f"OpenRouter error on {model}: {e}")
-                    # If network error, maybe retry same model
+                    # If network error, maybe retry same model, otherwise next
                     if attempt == 0:
                         await asyncio.sleep(1)
                         continue
