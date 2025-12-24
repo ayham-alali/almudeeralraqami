@@ -451,6 +451,12 @@ class GeminiProvider(LLMProvider):
         if not self.is_available:
             return None
         
+        # CRITICAL: Enforce global rate limit HERE for Gemini only
+        # This allows other providers (OpenRouter) to bypass this check
+        await get_rate_limiter().wait_for_capacity()
+        
+        # Add random jitter to prevent thundering herd()
+        
         start_time = time.time()
         
         for attempt in range(self.config.max_retries):
@@ -679,11 +685,9 @@ class LLMService:
         ) if self.config.cache_enabled else None
         
         # Initialize providers in priority order
-        # GEMINI-ONLY MODE: Only Gemini is active by default
-        # OpenAI is kept as fallback if key is provided
-        # OpenRouter is DISABLED to ensure Gemini-quality responses
-        # Set ENABLE_OPENROUTER=true to re-enable OpenRouter as backup
-        enable_openrouter = os.getenv("ENABLE_OPENROUTER", "false").lower() == "true"
+        # OpenRouter is ENABLED by default as high-quality backup (Gemini 2.0 Flash)
+        # providing failover when Gemini API hits daily rate limits
+        enable_openrouter = os.getenv("ENABLE_OPENROUTER", "true").lower() == "true"
         
         self.providers: List[LLMProvider] = [
             OpenAIProvider(self.config),  # Only used if OPENAI_API_KEY is set
@@ -748,6 +752,15 @@ class LLMService:
         
         # Try each provider in order
         for provider in self.providers:
+            # Smart Failover: Skip Gemini if global rate limiter is in cooldown
+            # This allows immediate failover to OpenRouter without waiting
+            if provider.name == "gemini":
+                rate_limiter = get_rate_limiter()
+                if rate_limiter.is_in_cooldown():
+                    remaining = rate_limiter.get_cooldown_remaining()
+                    logger.warning(f"Skipping Gemini due to active rate limit cooldown ({remaining:.1f}s), failing over to next provider")
+                    continue
+
             if not provider.is_available:
                 logger.debug(f"Provider {provider.name} not available, skipping")
                 continue
@@ -835,12 +848,12 @@ async def llm_generate(
     rate_limiter = get_rate_limiter()
     
     # Wait for semaphore - limits to N concurrent LLM requests
+    # Wait for semaphore - limits to N concurrent LLM requests
     async with semaphore:
-        # CRITICAL: Wait for rate limiter BEFORE making request
-        # This ensures minimum 10s gap between ALL requests globally
-        await rate_limiter.wait_for_capacity()
+        # Note: We removed the global rate_limiter.wait_for_capacity() call here.
+        # It is now handled inside GeminiProvider.generate() to allow failover to OpenRouter.
         
-        logger.debug(f"Acquired LLM semaphore + rate limit capacity, processing request...")
+        logger.debug(f"Acquired LLM semaphore, processing request...")
         response = await service.generate(
             prompt=prompt,
             system=system,
