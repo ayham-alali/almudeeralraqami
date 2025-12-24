@@ -83,6 +83,56 @@ def get_llm_semaphore(max_concurrent: int = 3) -> asyncio.Semaphore:
     return _llm_semaphore
 
 
+# ============ Global Rate Limiter ============
+
+class GlobalRateLimiter:
+    """
+    Enforces a minimum time interval between ALL Gemini API requests.
+    
+    This is more aggressive than the semaphore - it ensures no two requests
+    happen within MIN_INTERVAL seconds of each other, globally.
+    
+    For Gemini free tier (15 RPM), we use 10s minimum = 6 RPM max.
+    """
+    
+    # Minimum seconds between requests (10s = max 6 requests/minute)
+    MIN_INTERVAL = float(os.getenv("LLM_MIN_REQUEST_INTERVAL", "10.0"))
+    
+    _instance = None
+    _lock = None
+    _last_request_time = 0.0
+    
+    @classmethod
+    def get_instance(cls) -> "GlobalRateLimiter":
+        if cls._instance is None:
+            cls._instance = cls()
+            cls._lock = asyncio.Lock()
+            logger.info(f"Global rate limiter initialized: min {cls.MIN_INTERVAL}s between requests")
+        return cls._instance
+    
+    async def wait_for_capacity(self) -> None:
+        """
+        Wait until enough time has passed since the last request.
+        This ensures we never exceed the rate limit.
+        """
+        async with self._lock:
+            now = time.time()
+            time_since_last = now - self._last_request_time
+            
+            if time_since_last < self.MIN_INTERVAL:
+                wait_time = self.MIN_INTERVAL - time_since_last
+                logger.info(f"Rate limiter: waiting {wait_time:.1f}s before next request")
+                await asyncio.sleep(wait_time)
+            
+            # Update last request time BEFORE making the request
+            self._last_request_time = time.time()
+
+
+def get_rate_limiter() -> GlobalRateLimiter:
+    """Get the global rate limiter instance"""
+    return GlobalRateLimiter.get_instance()
+
+
 # ============ Response Caching ============
 
 class LRUCache:
@@ -717,15 +767,21 @@ async def llm_generate(
     """
     Convenience function for generating LLM responses.
     
-    Uses global semaphore to limit concurrent requests and prevent rate limiting.
+    Uses global rate limiter + semaphore to prevent rate limiting.
+    Rate limiter enforces minimum 10s between requests (6 RPM max).
     Returns just the content string (or None) for backward compatibility.
     """
     service = get_llm_service()
     semaphore = get_llm_semaphore(service.config.max_concurrent_requests)
+    rate_limiter = get_rate_limiter()
     
     # Wait for semaphore - limits to N concurrent LLM requests
     async with semaphore:
-        logger.debug(f"Acquired LLM semaphore, processing request...")
+        # CRITICAL: Wait for rate limiter BEFORE making request
+        # This ensures minimum 10s gap between ALL requests globally
+        await rate_limiter.wait_for_capacity()
+        
+        logger.debug(f"Acquired LLM semaphore + rate limit capacity, processing request...")
         response = await service.generate(
             prompt=prompt,
             system=system,
@@ -735,9 +791,9 @@ async def llm_generate(
             attachments=attachments
         )
         
-        # Add post-request delay to prevent burst rate limits
-        # This gives the API time to recover between sequential requests
+        # Add post-request delay for extra safety margin
         if service.config.post_request_delay > 0:
             await asyncio.sleep(service.config.post_request_delay)
         
         return response.content if response else None
+
