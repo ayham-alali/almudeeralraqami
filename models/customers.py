@@ -712,7 +712,10 @@ async def update_daily_analytics(
 
 
 async def get_ai_usage_today(license_id: int) -> dict:
-    """Get today's AI usage for quota display."""
+    """Get today's AI usage for quota display.
+    
+    Tracks actual AI operations (auto_replies) not just messages received.
+    """
     today_date = datetime.now().date()
     # Use date object for PostgreSQL, ISO string for SQLite
     today = today_date if DB_TYPE == "postgresql" else today_date.isoformat()
@@ -724,7 +727,7 @@ async def get_ai_usage_today(license_id: int) -> dict:
         row = await fetch_one(
             db,
             """
-            SELECT messages_received, messages_replied
+            SELECT messages_received, messages_replied, auto_replies
             FROM analytics 
             WHERE license_key_id = ? AND date = ?
             """,
@@ -732,17 +735,20 @@ async def get_ai_usage_today(license_id: int) -> dict:
         )
         
         if row:
-            # Use messages_received as it counts all incoming messages processed
-            used = row.get("messages_received") or 0
+            # Use auto_replies as it counts actual AI-generated responses
+            ai_used = row.get("auto_replies") or 0
+            messages_received = row.get("messages_received") or 0
         else:
-            used = 0
+            ai_used = 0
+            messages_received = 0
         
         return {
-            "used": used,
+            "used": ai_used,
             "limit": daily_limit,
-            "remaining": max(0, daily_limit - used),
-            "percentage": min(100, round((used / daily_limit) * 100)) if daily_limit > 0 else 0,
-            "date": today
+            "remaining": max(0, daily_limit - ai_used),
+            "percentage": min(100, round((ai_used / daily_limit) * 100)) if daily_limit > 0 else 0,
+            "date": today,
+            "messages_received": messages_received,  # For reference/display
         }
 
 
