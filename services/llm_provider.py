@@ -4,7 +4,7 @@ Production-grade LLM infrastructure with automatic failover and caching
 
 Supports:
 - OpenAI (primary)
-- Google Gemini (fallback)
+- Google Gemini via Vertex AI (fallback)
 - Rule-based (guaranteed fallback)
 """
 
@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import time
+import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -21,6 +22,24 @@ from typing import Optional, Dict, Any, List
 from collections import OrderedDict
 
 import httpx
+
+# Vertex AI imports (lazy loaded for startup performance)
+vertexai = None
+GenerativeModel = None
+
+def _init_vertex_ai():
+    """Lazy initialize Vertex AI SDK"""
+    global vertexai, GenerativeModel
+    if vertexai is None:
+        try:
+            import vertexai as vai
+            from vertexai.generative_models import GenerativeModel as GM
+            vertexai = vai
+            GenerativeModel = GM
+            return True
+        except ImportError:
+            return False
+    return True
 
 from logging_config import get_logger
 
@@ -37,18 +56,22 @@ class LLMConfig:
     openai_base_url: str = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"))
     openai_model: str = field(default_factory=lambda: os.getenv("OPENAI_MODEL", "gpt-4o"))
     
-    # Provider 1: Google Gemini (PRIMARY - Free tier)
-    google_api_key: str = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY", ""))
+    # Provider 1: Google Gemini via Vertex AI (PRIMARY)
+    # GCP Project and Location for Vertex AI
+    gcp_project_id: str = field(default_factory=lambda: os.getenv("GCP_PROJECT_ID", "gen-lang-client-0624316154"))
+    gcp_location: str = field(default_factory=lambda: os.getenv("GCP_LOCATION", "us-central1"))
     google_model: str = field(default_factory=lambda: os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"))
+    # Legacy API key (deprecated, kept for fallback)
+    google_api_key: str = field(default_factory=lambda: os.getenv("GOOGLE_API_KEY", ""))
     
     # Provider 2: OpenRouter (BACKUP - Free models)
     openrouter_api_key: str = field(default_factory=lambda: os.getenv("OPENROUTER_API_KEY", ""))
     openrouter_model: str = field(default_factory=lambda: os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-exp:free"))
     
-    # Failover: OpenAI (if key set) → Gemini → OpenRouter → Rule-based
+    # Failover: OpenAI (if key set) → Gemini (Vertex AI) → OpenRouter → Rule-based
     
     # Retry settings - aggressive for rate limit handling
-    # Gemini free tier has strict limits (15 RPM), so we wait MUCH longer between retries
+    # Vertex AI has better rate limits than AI Studio, but we keep conservative settings
     max_retries: int = 20  # increased to 20 for "Patient Retry"
     base_delay: float = 30.0  # Increased delay: 30s+ to wait out congestion
     
@@ -58,12 +81,11 @@ class LLMConfig:
     cache_max_size: int = 1000
     
     # Concurrency control - CRITICAL for preventing rate limits
-    # Default to 1 for free tier API to avoid rate limits
+    # Default to 1 for safety, but Vertex AI can handle more
     max_concurrent_requests: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_CONCURRENT", "1")))
     
     # Post-request delay in seconds - adds breathing room between requests
-    # Gemini free tier: 15 requests/minute = 4s minimum between requests
-    # INCREASED to 10s to be extremely safe against rate limits
+    # Vertex AI has better quotas, but we keep some delay for safety
     post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "10.0")))
 
 
@@ -416,14 +438,68 @@ class OpenAIProvider(LLMProvider):
 
 
 class GeminiProvider(LLMProvider):
-    """Google Gemini API Provider"""
+    """Google Gemini via Vertex AI Provider"""
     
-    GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+    _vertex_initialized = False
+    _temp_cred_file = None
     
     def __init__(self, config: LLMConfig):
         self.config = config
         self._last_error_time: Optional[float] = None
         self._error_count = 0
+        self._model = None
+        
+        # Initialize Vertex AI on first use
+        self._ensure_vertex_initialized()
+    
+    def _ensure_vertex_initialized(self) -> bool:
+        """Initialize Vertex AI SDK with proper credentials"""
+        if GeminiProvider._vertex_initialized:
+            return True
+        
+        try:
+            # Handle service account credentials for Railway deployment
+            # Railway sets GCP_SERVICE_ACCOUNT_KEY as JSON string
+            gcp_sa_key = os.getenv("GCP_SERVICE_ACCOUNT_KEY")
+            if gcp_sa_key:
+                # Write to temp file for Google SDK to use
+                if GeminiProvider._temp_cred_file is None:
+                    # Create temp file that persists for the lifetime of the app
+                    fd, path = tempfile.mkstemp(suffix=".json", prefix="gcp_creds_")
+                    with os.fdopen(fd, 'w') as f:
+                        f.write(gcp_sa_key)
+                    GeminiProvider._temp_cred_file = path
+                    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
+                    logger.info(f"Set GOOGLE_APPLICATION_CREDENTIALS from GCP_SERVICE_ACCOUNT_KEY")
+            
+            # Lazy load the Vertex AI SDK
+            if not _init_vertex_ai():
+                logger.warning("Vertex AI SDK not installed, Gemini provider unavailable")
+                return False
+            
+            # Initialize Vertex AI
+            vertexai.init(
+                project=self.config.gcp_project_id,
+                location=self.config.gcp_location
+            )
+            
+            GeminiProvider._vertex_initialized = True
+            logger.info(f"Vertex AI initialized: project={self.config.gcp_project_id}, location={self.config.gcp_location}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize Vertex AI: {e}")
+            return False
+    
+    def _get_model(self):
+        """Get or create the GenerativeModel instance"""
+        if self._model is None and GenerativeModel is not None:
+            try:
+                self._model = GenerativeModel(self.config.google_model)
+                logger.info(f"Created Gemini model: {self.config.google_model}")
+            except Exception as e:
+                logger.error(f"Failed to create Gemini model: {e}")
+        return self._model
     
     @property
     def name(self) -> str:
@@ -431,7 +507,8 @@ class GeminiProvider(LLMProvider):
     
     @property
     def is_available(self) -> bool:
-        if not self.config.google_api_key:
+        # Check if Vertex AI is properly initialized
+        if not self._ensure_vertex_initialized():
             return False
         if self._error_count >= 5 and self._last_error_time:
             if time.time() - self._last_error_time < 60:
@@ -451,118 +528,113 @@ class GeminiProvider(LLMProvider):
         if not self.is_available:
             return None
         
+        model = self._get_model()
+        if model is None:
+            logger.warning("Gemini model not available")
+            return None
+        
         # CRITICAL: Enforce global rate limit HERE for Gemini only
         # This allows other providers (OpenRouter) to bypass this check
         await get_rate_limiter().wait_for_capacity()
         
-        # Add random jitter to prevent thundering herd()
-        
         start_time = time.time()
+        
+        # Build the prompt content
+        full_prompt = f"{system}\n\n{prompt}" if system else prompt
+        
+        # Build content parts for Vertex AI
+        from vertexai.generative_models import Part
+        
+        content_parts = [full_prompt]
+        
+        # Add attachments (images, audio)
+        if attachments:
+            for att in attachments:
+                mime_type = att.get("type", "")
+                if mime_type.startswith("image/") or mime_type.startswith("audio/"):
+                    if "base64" in att:
+                        import base64
+                        data = base64.b64decode(att["base64"])
+                        content_parts.append(Part.from_data(data=data, mime_type=mime_type))
+        
+        # Configure generation
+        from vertexai.generative_models import GenerationConfig
+        
+        generation_config = GenerationConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        )
+        
+        if json_mode:
+            generation_config = GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+                response_mime_type="application/json",
+            )
         
         for attempt in range(self.config.max_retries):
             try:
-                async with httpx.AsyncClient(timeout=120.0) as client:  # Increased from 60s for complete generation
-                    # Gemini uses different structure
-                    full_prompt = f"{system}\n\n{prompt}" if system else prompt
-                    
-                    parts = [{"text": full_prompt}]
-                    
-                    # Add attachments for Gemini
-                    if attachments:
-                        for att in attachments:
-                            mime_type = att.get("type", "")
-                            # Support image and audio
-                            if mime_type.startswith("image/") or mime_type.startswith("audio/"):
-                                # If we have direct file data (base64)
-                                if "base64" in att:
-                                    parts.append({
-                                        "inlineData": {
-                                            "mimeType": mime_type,
-                                            "data": att["base64"] 
-                                        }
-                                    })
-                                # If we have a public URL, Gemini might need it downloaded first
-                                # For now, we assume the caller handles downloading or provides base64
-                                # Alternatively, fileData can be used if uploaded to File API, but that requires extra steps.
-                    
-                    body = {
-                        "contents": [
-                            {
-                                "parts": parts
-                            }
-                        ],
-                        "generationConfig": {
-                            "temperature": temperature,
-                            "maxOutputTokens": max_tokens,
-                        }
-                    }
-                    
-                    if json_mode:
-                        body["generationConfig"]["responseMimeType"] = "application/json"
-                    
-                    url = f"{self.GEMINI_API_URL}/{self.config.google_model}:generateContent?key={self.config.google_api_key}"
-                    
-                    response = await client.post(
-                        url,
-                        headers={"Content-Type": "application/json"},
-                        json=body,
+                # Use async generation
+                response = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: model.generate_content(
+                        content_parts,
+                        generation_config=generation_config,
                     )
-                    
-                    if response.status_code == 429:
-                        # CRITICAL: Report 429 to global rate limiter
-                        get_rate_limiter().report_rate_limit_hit()
-                        
-                        if attempt < self.config.max_retries - 1:
-                            # Patient Retry: Wait it out!
-                            # CRITICAL FIX: Respect Global Limiter Cooldown
-                            # If Global Limiter says "Wait 5 mins", we must wait 5 mins, not 30s.
-                            global_remaining = get_rate_limiter().get_cooldown_remaining()
-                            backoff_delay = self.config.base_delay * (1.5 ** attempt) # Slower exponential backoff
-                            
-                            # Take the maximum of the two delays
-                            delay = max(backoff_delay, global_remaining)
-                            
-                            if global_remaining > backoff_delay:
-                                logger.warning(f"Gemini 429: Global cooldown ({global_remaining:.1f}s) > Backoff ({backoff_delay:.1f}s). Waiting {delay:.1f}s...")
-                            else:
-                                logger.warning(f"Gemini 429 (Patient Retry {attempt+1}/{self.config.max_retries}), waiting {delay:.1f}s...")
-                                
-                            await asyncio.sleep(delay)
-                            continue
-                        else:
-                            logger.error("Gemini failed after maximum patient retries")
-                            self._record_error()
-                            return None
-                    
-                    response.raise_for_status()
-                    data = response.json()
-                    
-                    # Extract content from Gemini response
-                    candidates = data.get("candidates", [])
-                    if not candidates:
-                        return None
-                    
-                    content = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-                    
-                    latency = int((time.time() - start_time) * 1000)
-                    
-                    self._error_count = 0
-                    
-                    # Report success to reset 429 counter
-                    get_rate_limiter().report_success()
-                    
-                    return LLMResponse(
-                        content=content.strip(),
-                        provider=self.name,
-                        model=self.config.google_model,
-                        latency_ms=latency
-                    )
-                    
+                )
+                
+                # Extract content from response
+                if response.candidates and len(response.candidates) > 0:
+                    content = response.candidates[0].content.parts[0].text
+                else:
+                    logger.warning("Gemini returned no candidates")
+                    return None
+                
+                latency = int((time.time() - start_time) * 1000)
+                
+                self._error_count = 0
+                
+                # Report success to reset 429 counter
+                get_rate_limiter().report_success()
+                
+                return LLMResponse(
+                    content=content.strip(),
+                    provider=self.name,
+                    model=self.config.google_model,
+                    latency_ms=latency
+                )
+                
             except Exception as e:
+                error_str = str(e).lower()
+                
+                # Check for rate limit errors (429)
+                if "429" in str(e) or "resource_exhausted" in error_str or "quota" in error_str:
+                    # CRITICAL: Report 429 to global rate limiter
+                    get_rate_limiter().report_rate_limit_hit()
+                    
+                    if attempt < self.config.max_retries - 1:
+                        # Patient Retry: Wait it out!
+                        global_remaining = get_rate_limiter().get_cooldown_remaining()
+                        backoff_delay = self.config.base_delay * (1.5 ** attempt)
+                        
+                        delay = max(backoff_delay, global_remaining)
+                        
+                        if global_remaining > backoff_delay:
+                            logger.warning(f"Gemini 429: Global cooldown ({global_remaining:.1f}s) > Backoff ({backoff_delay:.1f}s). Waiting {delay:.1f}s...")
+                        else:
+                            logger.warning(f"Gemini 429 (Patient Retry {attempt+1}/{self.config.max_retries}), waiting {delay:.1f}s...")
+                        
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        logger.error("Gemini failed after maximum patient retries")
+                        self._record_error()
+                        return None
+                
+                # Other errors
                 self._record_error()
                 logger.error(f"Gemini error: {e}")
                 if attempt < self.config.max_retries - 1:
-                    # Exponential backoff with jitter
                     delay = self.config.base_delay * (2 ** attempt) + random.uniform(0, 5)
                     await asyncio.sleep(delay)
                     continue

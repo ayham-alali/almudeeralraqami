@@ -22,6 +22,9 @@ langchain-community>=0.0.10
 # For local LLM (Ollama) or free API alternatives
 httpx==0.26.0
 
+# Google Vertex AI (Gemini)
+google-cloud-aiplatform>=1.38.0
+
 # Gmail OAuth 2.0 and API
 google-auth==2.27.0
 google-auth-oauthlib==1.2.0
