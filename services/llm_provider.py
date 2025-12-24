@@ -338,7 +338,8 @@ class GeminiProvider(LLMProvider):
         system: Optional[str] = None,
         json_mode: bool = False,
         max_tokens: int = 1024,  # Increased from 600 for fuller Arabic responses
-        temperature: float = 0.3
+        temperature: float = 0.3,
+        attachments: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[LLMResponse]:
         if not self.is_available:
             return None
@@ -470,7 +471,8 @@ class OpenRouterProvider(LLMProvider):
         system: Optional[str] = None,
         json_mode: bool = False,
         max_tokens: int = 600,
-        temperature: float = 0.3
+        temperature: float = 0.3,
+        attachments: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[LLMResponse]:
         if not self.is_available:
             return None
@@ -597,7 +599,7 @@ class LLMService:
         prompt: str,
         system: Optional[str] = None,
         json_mode: bool = False,
-        max_tokens: int = 600,
+        max_tokens: int = 2048,  # Increased for Arabic responses
         temperature: float = 0.3,
         use_cache: bool = True,
         attachments: Optional[List[Dict[str, Any]]] = None
@@ -704,7 +706,7 @@ async def llm_generate(
     prompt: str,
     system: Optional[str] = None,
     json_mode: bool = False,
-    max_tokens: int = 600,
+    max_tokens: int = 2048,  # Increased for Arabic responses
     temperature: float = 0.3,
     attachments: Optional[List[Dict[str, Any]]] = None
 ) -> Optional[str]:
