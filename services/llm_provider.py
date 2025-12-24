@@ -745,7 +745,7 @@ class LLMService:
         
         # All providers failed
         self.stats["failures"] += 1
-        logger.warning("All LLM providers failed, returning None for rule-based fallback")
+        logger.warning("All LLM providers failed, returning None (will be retried later)")
         return None
     
     def get_stats(self) -> Dict[str, Any]:
