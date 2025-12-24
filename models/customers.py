@@ -631,7 +631,10 @@ async def update_daily_analytics(
     time_saved_seconds: int = 0
 ):
     """Update daily analytics"""
-    today = datetime.now().date().isoformat()
+    today_date = datetime.now().date()
+    # For PostgreSQL (asyncpg), pass actual date object
+    # For SQLite, pass ISO format string
+    today = today_date if DB_TYPE == "postgresql" else today_date.isoformat()
     
     async with get_db() as db:
         # Get or create today's record

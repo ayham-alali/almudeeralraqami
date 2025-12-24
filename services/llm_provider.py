@@ -598,66 +598,80 @@ class OpenRouterProvider(LLMProvider):
         
         start_time = time.time()
         
-        for attempt in range(self.config.max_retries):
-            try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    messages = []
-                    if system:
-                        messages.append({"role": "system", "content": system})
-                    messages.append({"role": "user", "content": prompt})
-                    
-                    body = {
-                        "model": self.config.openrouter_model,
-                        "messages": messages,
-                        "max_tokens": max_tokens,
-                        "temperature": temperature,
-                    }
-                    
-                    response = await client.post(
-                        self.OPENROUTER_API_URL,
-                        headers={
+        # fallback models if primary rate limits (Free tier strategy)
+        models_to_try = [
+            self.config.openrouter_model,  # Primary
+            "google/gemini-2.0-flash-thinking-exp:free",
+            "google/gemini-exp-1206:free",
+            "meta-llama/llama-3.3-70b-instruct:free",
+        ]
+        
+        # Max global timeout for all attempts
+        for model in models_to_try:
+            # Try each model up to 2 times
+            for attempt in range(2):
+                try:
+                    async with httpx.AsyncClient(timeout=45.0) as client: # Reduced timeout per attempt
+                        messages = []
+                        if system:
+                            messages.append({"role": "system", "content": system})
+                        messages.append({"role": "user", "content": prompt})
+                        
+                        body = {
+                            "model": model,
+                            "messages": messages,
+                            "max_tokens": max_tokens,
+                            "temperature": temperature,
+                        }
+                        
+                        # Add HTTP referer for OpenRouter rankings
+                        headers = {
                             "Authorization": f"Bearer {self.config.openrouter_api_key}",
                             "Content-Type": "application/json",
-                            "HTTP-Referer": "https://almudeer.app",
+                            "HTTP-Referer": "https://almudeer.royaraqamia.com",
                             "X-Title": "Al-Mudeer",
-                        },
-                        json=body,
-                    )
-                    
-                    if response.status_code == 429:
-                        if attempt < self.config.max_retries - 1:
-                            delay = self.config.base_delay * (2 ** attempt)
-                            logger.warning(f"OpenRouter rate limited, retry {attempt + 1}/{self.config.max_retries}")
-                            await asyncio.sleep(delay)
-                            continue
-                        else:
-                            self._record_error()
-                            return None
-                    
-                    response.raise_for_status()
-                    data = response.json()
-                    
-                    content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                    latency = int((time.time() - start_time) * 1000)
-                    
-                    self._error_count = 0
-                    
-                    return LLMResponse(
-                        content=content.strip(),
-                        provider=self.name,
-                        model=self.config.openrouter_model,
-                        latency_ms=latency
-                    )
-                    
-            except Exception as e:
-                self._record_error()
-                logger.error(f"OpenRouter error: {e}")
-                if attempt < self.config.max_retries - 1:
-                    await asyncio.sleep(self.config.base_delay * (2 ** attempt))
-                    continue
-                return None
+                        }
+                        
+                        response = await client.post(
+                            self.OPENROUTER_API_URL,
+                            headers=headers,
+                            json=body,
+                        )
+                        
+                        if response.status_code == 429:
+                            # If rate limited, immediately try next model if available
+                            # Do not sleep here unless it's the last model
+                            logger.warning(f"OpenRouter 429 on {model}. Switching model...")
+                            break # Break inner loop to try next model
+                        
+                        response.raise_for_status()
+                        data = response.json()
+                        
+                        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                        latency = int((time.time() - start_time) * 1000)
+                        
+                        self._error_count = 0
+                        
+                        return LLMResponse(
+                            content=content.strip(),
+                            provider=self.name,
+                            model=model,
+                            latency_ms=latency
+                        )
+                        
+                except Exception as e:
+                    logger.warning(f"OpenRouter error on {model}: {e}")
+                    # If network error, maybe retry same model
+                    if attempt == 0:
+                        await asyncio.sleep(1)
+                        continue
+                    else:
+                        break # Try next model
         
+        # If all models failed
+        self._record_error()
         return None
+
     
     def _record_error(self):
         self._error_count += 1
