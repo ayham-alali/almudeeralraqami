@@ -4,6 +4,7 @@ Human-like responses with persona support, anti-robotic patterns, and style lear
 """
 
 import json
+import json_repair
 import re
 from typing import TypedDict, Optional, Dict, Any
 import os
@@ -190,7 +191,7 @@ async def enhanced_classify_node(state: EnhancedAgentState) -> EnhancedAgentStat
         
         if llm_response:
             try:
-                classification = json.loads(llm_response)
+                classification = json_repair.loads(llm_response)
                 state["intent"] = classification.get("intent", "أخرى")
                 state["urgency"] = classification.get("urgency", "عادي")
                 state["sentiment"] = classification.get("sentiment", "محايد")
@@ -284,7 +285,7 @@ JSON فقط:
     
     if llm_response:
         try:
-            extracted = json.loads(llm_response)
+            extracted = json_repair.loads(llm_response)
             state["key_points"] = extracted.get("key_points", [])
             state["action_items"] = extracted.get("action_items", [])
         except:

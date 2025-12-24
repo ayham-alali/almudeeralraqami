@@ -1,0 +1,5 @@
+Collecting json-repair
+  Downloading json_repair-0.54.3-py3-none-any.whl.metadata (12 kB)
+Downloading json_repair-0.54.3-py3-none-any.whl (29 kB)
+Installing collected packages: json-repair
+Successfully installed json-repair-0.54.3

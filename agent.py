@@ -5,6 +5,7 @@ Optimized for low bandwidth with text-only responses
 """
 
 import json
+import json_repair
 import re
 from typing import TypedDict, Literal, Optional, Dict, Any, List
 from models import update_daily_analytics
@@ -451,7 +452,7 @@ async def classify_node(state: AgentState) -> AgentState:
     
     if llm_response:
         try:
-            classification = json.loads(llm_response)
+            classification = json_repair.loads(llm_response)
             state["intent"] = classification.get("intent", "أخرى")
             state["urgency"] = classification.get("urgency", "عادي")
             state["sentiment"] = classification.get("sentiment", "محايد")
@@ -513,7 +514,7 @@ async def extract_node(state: AgentState) -> AgentState:
     
     if llm_response:
         try:
-            extracted = json.loads(llm_response)
+            extracted = json_repair.loads(llm_response)
             state["key_points"] = extracted.get("key_points", [])
             state["action_items"] = extracted.get("action_items", [])
             return state
@@ -841,14 +842,15 @@ async def process_message(
             mega_prompt,
             system=system_prompt,
             json_mode=True,
-            max_tokens=1500, # Increased for single long response
+            max_tokens=2500,  # Increased for Arabic (needs ~60% more tokens)
             attachments=attachments
         )
         
         if not response_json:
              raise ValueError("LLM returned None (Rate Limit or Error)")
 
-        data = json.loads(response_json)
+        # Use json_repair to handle truncated/malformed JSON from LLM
+        data = json_repair.loads(response_json)
         
         # --- Step 4: Post-Processing & Normalization ---
         # Analytics: Update replied count if draft generated
