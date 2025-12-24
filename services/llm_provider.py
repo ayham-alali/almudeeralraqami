@@ -63,8 +63,8 @@ class LLMConfig:
     
     # Post-request delay in seconds - adds breathing room between requests
     # Gemini free tier: 15 requests/minute = 4s minimum between requests
-    # Using 6 seconds to stay safely under 10 RPM (vs 15 RPM limit)
-    post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "6.0")))
+    # INCREASED to 10s to be extremely safe against rate limits
+    post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "10.0")))
 
 
 # ============ Global Concurrency Control ============
@@ -98,9 +98,9 @@ class GlobalRateLimiter:
     This prevents rate limits even when the app restarts mid-request-burst.
     """
     
-    # Minimum seconds between requests (15s = max 4 requests/minute)
-    # Very conservative to stay well under Gemini's 15 RPM limit
-    MIN_INTERVAL = float(os.getenv("LLM_MIN_REQUEST_INTERVAL", "15.0"))
+    # Minimum seconds between requests (20s = max 3 requests/minute)
+    # Extremely conservative to ensure we NEVER hit the 15 RPM limit even with bursts
+    MIN_INTERVAL = float(os.getenv("LLM_MIN_REQUEST_INTERVAL", "20.0"))
     
     # Base cooldown after 429 (5 minutes)
     BASE_COOLDOWN = 300.0
@@ -600,10 +600,11 @@ class OpenRouterProvider(LLMProvider):
         
         # fallback models if primary rate limits (Free tier strategy)
         models_to_try = [
-            self.config.openrouter_model,  # Primary
-            "google/gemini-2.0-flash-thinking-exp:free",
-            "google/gemini-exp-1206:free",
-            "meta-llama/llama-3.3-70b-instruct:free",
+            self.config.openrouter_model,  # Primary from config
+            "google/gemini-2.0-flash-exp:free", # Standard flash exp (stable)
+            "google/gemini-exp-1206:free",      # Previous stable exp
+            "meta-llama/llama-3.3-70b-instruct:free", # Fallback non-Google
+            "microsoft/phi-4:free",             # Ultra-fast fallback
         ]
         
         # Max global timeout for all attempts
@@ -640,8 +641,9 @@ class OpenRouterProvider(LLMProvider):
                         
                         if response.status_code == 429:
                             # If rate limited, immediately try next model if available
-                            # Do not sleep here unless it's the last model
                             logger.warning(f"OpenRouter 429 on {model}. Switching model...")
+                            # Add a small penalty delay to avoid hammering the API
+                            await asyncio.sleep(2)
                             break # Break inner loop to try next model
                         
                         response.raise_for_status()

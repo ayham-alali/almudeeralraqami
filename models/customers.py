@@ -673,18 +673,40 @@ async def update_daily_analytics(
             neg = 1 if sentiment == "سلبي" else 0
             neu = 1 if sentiment == "محايد" else 0
             
-            await execute_sql(
-                db,
-                """
-                INSERT INTO analytics 
-                (license_key_id, date, messages_received, messages_replied,
-                 auto_replies, positive_sentiment, negative_sentiment,
-                 neutral_sentiment, time_saved_seconds)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [license_id, today, messages_received, messages_replied,
-                 auto_replies, pos, neg, neu, time_saved_seconds]
-            )
+            try:
+                await execute_sql(
+                    db,
+                    """
+                    INSERT INTO analytics 
+                    (license_key_id, date, messages_received, messages_replied,
+                     auto_replies, positive_sentiment, negative_sentiment,
+                     neutral_sentiment, time_saved_seconds)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [license_id, today, messages_received, messages_replied,
+                     auto_replies, pos, neg, neu, time_saved_seconds]
+                )
+            except Exception as e:
+                # Handle NotNullViolationError for missing SERIAL/AUTOINCREMENT on 'id'
+                if "null value in column \"id\"" in str(e):
+                    # Manual ID generation fallback
+                    max_row = await fetch_one(db, "SELECT MAX(id) as max_id FROM analytics")
+                    next_id = (max_row.get("max_id") or 0) + 1
+                    
+                    await execute_sql(
+                        db,
+                        """
+                        INSERT INTO analytics 
+                        (id, license_key_id, date, messages_received, messages_replied,
+                         auto_replies, positive_sentiment, negative_sentiment,
+                         neutral_sentiment, time_saved_seconds)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [next_id, license_id, today, messages_received, messages_replied,
+                         auto_replies, pos, neg, neu, time_saved_seconds]
+                    )
+                else:
+                    raise e
         
         await commit_db(db)
 
