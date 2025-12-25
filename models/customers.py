@@ -714,7 +714,8 @@ async def update_daily_analytics(
 async def get_ai_usage_today(license_id: int) -> dict:
     """Get today's AI usage for quota display.
     
-    Tracks actual AI operations (auto_replies) not just messages received.
+    Tracks AI-generated draft responses (messages_replied) as the quota metric.
+    This counts every message that received an AI-generated response.
     """
     today_date = datetime.now().date()
     # Use date object for PostgreSQL, ISO string for SQLite
@@ -735,8 +736,9 @@ async def get_ai_usage_today(license_id: int) -> dict:
         )
         
         if row:
-            # Use auto_replies as it counts actual AI-generated responses
-            ai_used = row.get("auto_replies") or 0
+            # Use messages_replied as it counts AI-generated draft responses
+            # (incremented in agent.py draft_node and agent_enhanced.py enhanced_draft_node)
+            ai_used = row.get("messages_replied") or 0
             messages_received = row.get("messages_received") or 0
         else:
             ai_used = 0
