@@ -287,11 +287,12 @@ async def get_customer_avg_response_time(
         rows = await fetch_all(
             db,
             f"""
-            SELECT created_at, replied_at
-            FROM inbox_messages
-            WHERE license_key_id = ? AND ({where_clause}) 
-              AND replied_at IS NOT NULL
-            ORDER BY created_at DESC
+            SELECT i.created_at, o.created_at as replied_at
+            FROM inbox_messages i
+            JOIN outbox_messages o ON o.inbox_message_id = i.id
+            WHERE i.license_key_id = ? AND ({where_clause}) 
+              AND o.created_at IS NOT NULL
+            ORDER BY i.created_at DESC
             LIMIT 20
             """,
             params
