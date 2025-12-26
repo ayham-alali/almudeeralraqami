@@ -4,10 +4,14 @@ B2B AI Agent for Syrian and Arab Market
 """
 
 import os
+import warnings
 
 # Disable ChromaDB telemetry BEFORE any imports that might use it
 # This fixes PostHog compatibility errors
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
+# Suppress harmless Pydantic field shadowing warnings from ChromaDB
+warnings.filterwarnings("ignore", message="Field name .* shadows an attribute in parent")
 
 import json
 import asyncio
