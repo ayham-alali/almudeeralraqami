@@ -759,7 +759,7 @@ async def process_message(
     history: str = None,
     message_type: str = None, # Kept for compatibility, can be removed if not used
     sender_name: str = None, # Kept for compatibility
-    sender_city: str = None, # Kept for compatibility
+    sender_contact: str = None, # Contact info (email/phone) of the sender
     preferences: Optional[Dict[str, Any]] = None, # Kept for compatibility
     status_callback: Optional[Callable[[str], Awaitable[None]]] = None, # New: For real-time updates
 ) -> dict:
@@ -777,7 +777,7 @@ async def process_message(
         return text.strip()
 
     clean_message = clean_text(message)
-    sender_contact = "" # In a real app we'd pass this down too, but for now it's fine
+    sender_contact = sender_contact or ""  # Use param value or default to empty
     
     # Prepend history to message for context or add to state
     # We'll just add it to the prompt context
