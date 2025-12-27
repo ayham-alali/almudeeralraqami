@@ -1437,7 +1437,7 @@ async def approve_message(
     license: dict = Depends(get_license_from_header)
 ):
     """Approve or ignore a message/chat"""
-    from models import ignore_chat
+    from models import ignore_chat, approve_chat_messages
     from models.inbox import get_inbox_message_by_id
     
     message = await get_inbox_message_by_id(message_id, license["license_id"])
@@ -1476,6 +1476,12 @@ async def approve_message(
         # Approve it
         await approve_outbox_message(outbox_id, response_body)
         await update_inbox_status(message_id, "approved")
+        
+        # FIX: Also mark other "analyzed" messages in this conversation as approved
+        # This ensures the conversation status moves to "approved" even if there are other pending messages
+        sender_contact = message.get("sender_contact") or message.get("sender_id") or ""
+        if sender_contact:
+            await approve_chat_messages(license["license_id"], sender_contact)
         
         # Send in background
         background_tasks.add_task(
