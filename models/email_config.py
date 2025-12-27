@@ -120,12 +120,23 @@ async def save_email_config(
         return row["id"] if row else 0
 
 
-async def get_email_config(license_id: int) -> Optional[dict]:
-    """Get email configuration for a license (SQLite & PostgreSQL compatible)."""
+async def get_email_config(license_id: int, include_inactive: bool = True) -> Optional[dict]:
+    """Get email configuration for a license (SQLite & PostgreSQL compatible).
+    
+    Args:
+        license_id: The license key ID
+        include_inactive: If False, only returns active configs. Default True for backward compatibility.
+    """
     async with get_db() as db:
+        if include_inactive:
+            query = "SELECT * FROM email_configs WHERE license_key_id = ?"
+        else:
+            # Use DB_TYPE to handle boolean differences
+            is_active_value = "TRUE" if DB_TYPE == "postgresql" else "1"
+            query = f"SELECT * FROM email_configs WHERE license_key_id = ? AND is_active = {is_active_value}"
         row = await fetch_one(
             db,
-            "SELECT * FROM email_configs WHERE license_key_id = ?",
+            query,
             [license_id],
         )
         if row:
@@ -160,7 +171,8 @@ async def get_email_oauth_tokens(license_id: int) -> Optional[dict]:
 async def update_email_config_settings(
     license_id: int,
     auto_reply: bool = None,
-    check_interval: int = None
+    check_interval: int = None,
+    is_active: bool = None
 ) -> bool:
     """Update email configuration settings without changing tokens"""
     async with get_db() as db:
@@ -174,6 +186,10 @@ async def update_email_config_settings(
         if check_interval is not None:
             updates.append("check_interval_minutes = ?")
             params.append(check_interval)
+        
+        if is_active is not None:
+            updates.append("is_active = ?")
+            params.append(is_active)
         
         if not updates:
             return False

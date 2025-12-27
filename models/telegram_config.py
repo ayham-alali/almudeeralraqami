@@ -63,16 +63,26 @@ async def save_telegram_config(
         return row["id"] if row else 0
 
 
-async def get_telegram_config(license_id: int) -> Optional[dict]:
+async def get_telegram_config(license_id: int, include_inactive: bool = True) -> Optional[dict]:
     """Get Telegram configuration for a license (SQLite & PostgreSQL compatible).
+    
+    Args:
+        license_id: The license key ID
+        include_inactive: If False, only returns active configs. Default True for backward compatibility.
     
     Note: bot_token is masked for security in API responses.
     Use get_telegram_bot_token() for internal backend use.
     """
     async with get_db() as db:
+        if include_inactive:
+            query = "SELECT * FROM telegram_configs WHERE license_key_id = ?"
+        else:
+            # Use DB_TYPE to handle boolean differences
+            is_active_value = "TRUE" if DB_TYPE == "postgresql" else "1"
+            query = f"SELECT * FROM telegram_configs WHERE license_key_id = ? AND is_active = {is_active_value}"
         config = await fetch_one(
             db,
-            "SELECT * FROM telegram_configs WHERE license_key_id = ?",
+            query,
             [license_id],
         )
         if config and config.get("bot_token"):

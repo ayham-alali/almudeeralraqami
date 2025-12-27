@@ -272,7 +272,7 @@ async def list_integration_accounts(license: dict = Depends(get_license_from_hea
     accounts: List[IntegrationAccount] = []
 
     # Email
-    email_cfg = await get_email_config(license_id)
+    email_cfg = await get_email_config(license_id, include_inactive=False)
     if email_cfg:
         accounts.append(
             IntegrationAccount(
@@ -285,7 +285,7 @@ async def list_integration_accounts(license: dict = Depends(get_license_from_hea
         )
 
     # Telegram bot
-    telegram_cfg = await get_telegram_config(license_id)
+    telegram_cfg = await get_telegram_config(license_id, include_inactive=False)
     if telegram_cfg:
         display = telegram_cfg.get("bot_username") or "Telegram Bot"
         accounts.append(
