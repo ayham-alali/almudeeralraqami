@@ -1495,6 +1495,27 @@ async def approve_message(
     raise HTTPException(status_code=400, detail="إجراء غير صالح")
 
 
+@router.post("/inbox/cleanup")
+async def cleanup_inbox_status(
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Run a cleanup task to fix stuck 'Waiting for Approval' chats.
+    Mark "analyzed" messages as "approved" if there is a later "sent" message in the same conversation.
+    """
+    from models.inbox import fix_stale_inbox_status
+    
+    try:
+        count = await fix_stale_inbox_status(license["license_id"])
+        return {
+            "success": True, 
+            "message": "تم تنظيف المحادثات العالقة بنجاح", 
+            "details": f"Ran cleanup task"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cleanup failed: {e}")
+
+
 @router.get("/outbox")
 async def get_outbox(license: dict = Depends(get_license_from_header)):
     """Get outbox messages"""
