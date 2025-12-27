@@ -375,18 +375,11 @@ async def ingest_node(state: AgentState) -> AgentState:
     """Step 1: Ingest and clean the message"""
     state["processing_step"] = "استلام"
     
-    # Update analytics for received message
-    if state.get("preferences") and state["preferences"].get("license_key_id"):
-        try:
-            from models import update_daily_analytics
-            # Note: We use asyncio.create_task to not block the agent flow
-            import asyncio
-            asyncio.create_task(update_daily_analytics(
-                license_id=state["preferences"]["license_key_id"],
-                messages_received=1
-            ))
-        except Exception as e:
-            print(f"Analytics update failed: {e}")
+    # NOTE: Analytics (messages_received) is updated in process_message() - not here
+    # to avoid double-counting since both ingest_node and process_message were
+    # incrementing the counter previously.
+    
+
     
     # Clean the message
     raw = state["raw_message"].strip()

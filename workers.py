@@ -1174,6 +1174,14 @@ class MessagePoller:
             # Approve and send
             await approve_outbox_message(outbox_id)
             await self._send_message(outbox_id, license_id, channel)
+            
+            # Track auto-reply in analytics
+            from models import update_daily_analytics
+            await update_daily_analytics(
+                license_id=license_id,
+                auto_replies=1
+            )
+            logger.info(f"Auto-reply sent for message {message_id}")
         
         except Exception as e:
             logger.error(f"Error in auto-reply for message {message_id}: {e}", exc_info=True)
