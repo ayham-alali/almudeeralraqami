@@ -923,7 +923,8 @@ class LLMService:
         max_tokens: int = 2048,  # Increased for Arabic responses
         temperature: float = 0.3,
         use_cache: bool = True,
-        attachments: Optional[List[Dict[str, Any]]] = None
+        attachments: Optional[List[Dict[str, Any]]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[LLMResponse]:
         """
         Generate a response using available providers with automatic failover.
@@ -935,6 +936,7 @@ class LLMService:
             max_tokens: Maximum response tokens
             temperature: Response creativity (0.0-1.0)
             use_cache: Whether to check/store in cache
+            tools: Optional list of tool definitions for function calling
         
         Returns:
             LLMResponse or None if all providers fail
@@ -971,14 +973,26 @@ class LLMService:
             
             logger.debug(f"Trying provider: {provider.name}")
             
-            response = await provider.generate(
-                prompt=prompt,
-                system=system,
-                json_mode=json_mode,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                attachments=attachments
-            )
+            # Only pass tools to providers that support it (Gemini)
+            if provider.name == "gemini" and tools:
+                response = await provider.generate(
+                    prompt=prompt,
+                    system=system,
+                    json_mode=json_mode,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    attachments=attachments,
+                    tools=tools
+                )
+            else:
+                response = await provider.generate(
+                    prompt=prompt,
+                    system=system,
+                    json_mode=json_mode,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    attachments=attachments
+                )
             
             if response and response.content:
                 # Track usage
