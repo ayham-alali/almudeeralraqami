@@ -131,50 +131,229 @@ def filter_blocked_senders(message: Dict, blocked_list: List[str]) -> tuple[bool
     
     return True, None
 
-
-
 def filter_automated_messages(message: Dict) -> tuple[bool, Optional[str]]:
     """
-    Filter automated messages (OTP, Marketing, System Info).
-    Returns (True, None) if message is CLEAN.
-    Returns (False, Reason) if message should be BLOCKED.
+    Filter automated messages (OTP, Marketing, System Info, Ads, Special Offers, 
+    Account Info, Warnings, Newsletters, Transactional).
+    
+    Returns (True, None) if message is CLEAN (from a real customer).
+    Returns (False, Reason) if message should be BLOCKED (automated/marketing).
     """
     body = message.get("body", "").lower()
+    sender_contact = (message.get("sender_contact") or "").lower()
+    sender_name = (message.get("sender_name") or "").lower()
+    subject = (message.get("subject") or "").lower()
     
-    # 1. OTP / Verification Codes
-    otp_patterns = [
-        r"code\s*is\s*\d+",
-        r"verification\s*code",
-        r"one-time\s*password",
-        r"otp",
-        r"رمز\s*التحقق",
-        r"كود\s*التفعيل",
-        r"كلمة\s*المرور\s*المؤقتة",
-        r"\b\d{4,6}\b.*code",  # "123456 is your code"
+    # Combine all searchable text
+    full_text = f"{body} {subject} {sender_name}"
+    
+    # ============ SENDER-BASED FILTERING ============
+    # Common automated sender patterns (email addresses)
+    automated_sender_patterns = [
+        r"^noreply@", r"^no-reply@", r"^no\.reply@",
+        r"^notifications?@", r"^newsletter@", r"^newsletters@",
+        r"^marketing@", r"^promo@", r"^promotions?@",
+        r"^ads?@", r"^advertising@", r"^campaign@",
+        r"^info@", r"^support@.*noreply", r"^alerts?@",
+        r"^security@", r"^account@", r"^billing@",
+        r"^mailer-daemon@", r"^postmaster@", r"^bounce@",
+        r"^updates?@", r"^news@", r"^digest@",
+        r"^subscriptions?@", r"^automated@", r"^system@",
+        r"^donotreply@", r"^do-not-reply@", r"^reply-.*@",
+        r"@.*\.noreply\.", r"@bounce\.", r"@email\.",
+        r"@mail\.", r"@mailer\.", r"@notifications?\.",
+        r"@campaign\.", r"@newsletter\.", r"@promo\.",
     ]
-    if any(re.search(p, body) for p in otp_patterns):
+    
+    for pattern in automated_sender_patterns:
+        if re.search(pattern, sender_contact):
+            return False, "Automated: Sender pattern detected"
+    
+    # ============ 1. OTP / VERIFICATION CODES ============
+    otp_patterns = [
+        r"code\s*is\s*\d+", r"code\s*:\s*\d+",
+        r"verification\s*code", r"one-time\s*password",
+        r"\botp\b", r"passcode", r"pin\s*code",
+        r"رمز\s*التحقق", r"كود\s*التفعيل", r"كلمة\s*المرور\s*المؤقتة",
+        r"رمز\s*الدخول", r"كود\s*التأكيد", r"رمز\s*التأكيد",
+        r"\b\d{4,6}\b.*code", r"code.*\b\d{4,6}\b",
+        r"رقم\s*سري", r"رمز\s*أمان",
+    ]
+    if any(re.search(p, full_text) for p in otp_patterns):
         return False, "Automated: OTP/Verification"
 
-    # 2. Marketing / Ads / Offers
+    # ============ 2. MARKETING / ADS / OFFERS ============
     marketing_keywords = [
-        "unsubscribe", "opt-out", "stop to end", 
+        # English
+        "unsubscribe", "opt-out", "stop to end", "manage preferences",
         "promotional", "limited time offer", "special offer", "discount",
-        "click here", "click below", "exclusive deal",
+        "click here", "click below", "exclusive deal", "act now",
+        "advertisement", "sponsored", "promoted", "ad:", "[ad]",
+        "flash sale", "today only", "sale ends", "hurry",
+        "% off", "save now", "deal of the day", "best price",
+        "clearance", "buy now", "shop now", "order now",
+        "free shipping", "free trial", "free gift", "bonus",
+        "coupon", "voucher", "promo code", "discount code",
+        "you've been selected", "congratulations", "winner",
+        "claim your", "redeem", "expires soon", "last chance",
+        # Arabic
         "إلغاء الاشتراك", "أرسل توقف", "عرض خاص", "لفترة محدودة",
-        "تخفيضات", "خصم خاص", "اشترك الآن"
+        "تخفيضات", "خصم خاص", "اشترك الآن", "عرض حصري",
+        "تسوق الآن", "اطلب الآن", "خصم", "عرض اليوم",
+        "تنزيلات", "خصم حصري", "أسعار مخفضة", "فرصة لا تعوض",
+        "احصل على", "مجاني", "هدية", "جائزة", "فائز", "فوز",
+        "كوبون", "قسيمة", "رمز الخصم", "برعاية", "إعلان", "ترويج",
     ]
-    if any(k in body for k in marketing_keywords):
+    if any(k in full_text for k in marketing_keywords):
         return False, "Automated: Marketing/Ad"
 
-    # 3. System / Info Messages
+    # ============ 3. SYSTEM / INFO / TRANSACTIONAL ============
     info_keywords = [
+        # English  
         "do not reply", "auto-generated", "system message",
-        "no-reply", "noreply",
+        "no-reply", "noreply", "automated message", "this is an automated",
+        "order confirmation", "shipping update", "delivery update",
+        "tracking number", "your order has", "has been shipped",
+        "payment received", "payment confirmed", "receipt",
+        "invoice", "statement", "transaction", "purchase confirmation",
+        # Arabic
         "لا ترد", "رسالة تلقائية", "تمت العملية بنجاح",
-        "عزيزي العميل، تم", "تم سحب", "تم إيداع"
+        "عزيزي العميل، تم", "تم سحب", "تم إيداع",
+        "تأكيد الطلب", "تحديث الشحن", "رقم التتبع",
+        "تم شحن", "إيصال", "فاتورة", "كشف حساب",
+        "تم الدفع", "تأكيد الدفع", "عملية ناجحة",
     ]
-    if any(k in body for k in info_keywords):
-        return False, "Automated: System Info"
+    if any(k in full_text for k in info_keywords):
+        return False, "Automated: System/Transactional"
+
+    # ============ 4. ACCOUNT NOTIFICATIONS ============
+    account_keywords = [
+        # English
+        "password reset", "reset your password", "forgot password",
+        "account update", "account created", "account activated",
+        "login attempt", "new sign-in", "new device", "new login",
+        "verify your email", "confirm your email", "email verification",
+        "two-factor", "2fa", "mfa", "authenticator",
+        "security code", "access code", "account security",
+        "profile update", "settings changed", "preferences updated",
+        # Arabic
+        "تحديث الحساب", "تسجيل دخول جديد", "جهاز جديد",
+        "إعادة تعيين كلمة المرور", "استعادة كلمة المرور",
+        "تفعيل الحساب", "تأكيد البريد", "التحقق من البريد",
+        "رمز الأمان", "رمز الوصول", "أمان الحساب",
+        "تم تحديث الملف", "تم تغيير الإعدادات",
+    ]
+    if any(k in full_text for k in account_keywords):
+        return False, "Automated: Account Notification"
+
+    # ============ 5. SECURITY WARNINGS / ALERTS ============
+    security_keywords = [
+        # English
+        "security alert", "security notice", "security warning",
+        "suspicious activity", "unusual activity", "unauthorized",
+        "breach", "compromised", "hacked", "fraud alert",
+        "action required", "immediate action", "urgent action",
+        "your account may", "we noticed", "we detected",
+        "blocked", "restricted", "suspended", "locked",
+        # Arabic
+        "تنبيه أمني", "تحذير أمني", "إشعار أمني",
+        "نشاط مشبوه", "نشاط غير عادي", "غير مصرح به",
+        "اختراق", "تم حظر", "تم تعليق", "تم تقييد",
+        "إجراء مطلوب", "إجراء فوري", "إجراء عاجل",
+    ]
+    if any(k in full_text for k in security_keywords):
+        return False, "Automated: Security Alert"
+
+    # ============ 6. NEWSLETTERS / DIGESTS ============
+    newsletter_keywords = [
+        # English
+        "newsletter", "weekly digest", "daily digest", "monthly digest",
+        "weekly update", "daily update", "monthly update",
+        "news roundup", "news summary", "this week in",
+        "top stories", "headlines", "what's new",
+        "edition", "issue #", "issue no",
+        "curator", "curated", "editorial",
+        # Arabic
+        "النشرة الإخبارية", "ملخص أسبوعي", "ملخص يومي",
+        "تحديث أسبوعي", "تحديث يومي", "أخبار الأسبوع",
+        "أهم الأخبار", "عناوين اليوم", "ما الجديد",
+    ]
+    if any(k in full_text for k in newsletter_keywords):
+        return False, "Automated: Newsletter"
+
+    # ============ 7. TERMS / POLICY UPDATES ============
+    policy_keywords = [
+        # English
+        "terms of use", "terms of service", "privacy policy",
+        "policy update", "terms update", "legal update",
+        "we've updated", "we have updated", "changes to our",
+        "updated our terms", "updated our policy", "updated our privacy",
+        "service agreement", "user agreement", "license agreement",
+        "effective date", "these changes will take effect",
+        "by continuing to use", "data protection", "gdpr",
+        # Arabic
+        "شروط الاستخدام", "سياسة الخصوصية", "تحديث الشروط",
+        "تغييرات على", "تم تحديث", "الاتفاقية",
+    ]
+    if any(k in full_text for k in policy_keywords):
+        return False, "Automated: Terms/Policy Update"
+
+    # ============ 8. WELCOME / ONBOARDING EMAILS ============
+    welcome_keywords = [
+        # English
+        "welcome to", "thanks for signing up", "thank you for signing up",
+        "thanks for joining", "thank you for joining", "get started",
+        "getting started", "welcome aboard", "you're in", "you are in",
+        "account is ready", "account has been created",
+        "first steps", "next steps", "start using",
+        "activate your", "complete your profile", "set up your",
+        "explore our", "discover our", "learn how to",
+        # Arabic
+        "مرحبا بك في", "أهلا بك في", "شكرا للتسجيل",
+        "شكرا للانضمام", "ابدأ الآن", "حسابك جاهز",
+        "الخطوات الأولى", "أكمل ملفك الشخصي",
+    ]
+    if any(k in full_text for k in welcome_keywords):
+        return False, "Automated: Welcome/Onboarding"
+
+    # ============ 9. CI/CD / DEVOPS NOTIFICATIONS ============
+    devops_keywords = [
+        # Build notifications
+        "build failed", "build succeeded", "build passed", "build completed",
+        "deployment failed", "deployment succeeded", "deploy failed",
+        "pipeline failed", "pipeline succeeded", "pipeline completed",
+        "workflow failed", "workflow succeeded", "workflow completed",
+        # Git notifications
+        "pull request", "merge request", "commit", "push notification",
+        "code review", "branch", "repository",
+        # CI/CD platforms
+        "github actions", "gitlab ci", "jenkins", "travis ci",
+        "circleci", "azure devops", "bitbucket pipelines",
+        "railway", "vercel", "netlify", "heroku", "aws codebuild",
+        # Server/monitoring
+        "server alert", "server down", "server error", "uptime",
+        "monitoring alert", "health check", "crash report",
+        "cpu usage", "memory usage", "disk space",
+        "error rate", "latency alert",
+    ]
+    if any(k in full_text for k in devops_keywords):
+        return False, "Automated: CI/CD/DevOps"
+
+    # ============ 10. SERVICE PROVIDER NOREPLY ============
+    # Check for additional service-specific noreply patterns
+    service_noreply_patterns = [
+        r"googleone-noreply", r"google-noreply", r"@google\.com$",
+        r"@notify\.railway\.app", r"@github\.com", r"@gitlab\.com",
+        r"@microsoft\.com", r"clarity@microsoft", r"@azure\.com",
+        r"@vercel\.com", r"@netlify\.com", r"@heroku\.com",
+        r"@dropbox\.com", r"@slack\.com", r"@zoom\.us",
+        r"@stripe\.com", r"@paypal\.com", r"@linkedin\.com",
+        r"@twitter\.com", r"@x\.com", r"@facebook\.com",
+        r"@meta\.com", r"@apple\.com", r"@amazon\.com",
+    ]
+    for pattern in service_noreply_patterns:
+        if re.search(pattern, sender_contact):
+            return False, "Automated: Service Provider"
 
     return True, None
 

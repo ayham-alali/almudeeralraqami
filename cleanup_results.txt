@@ -1,0 +1,102 @@
+﻿============================================================
+Al-Mudeer - Automated Email Cleanup
+============================================================
+Database Type: postgresql
+Mode: DRY RUN (preview only)
+------------------------------------------------------------
+
+Fetching all inbox messages...
+Total messages in database: 626
+
+≡ƒùæ∩╕Å  Automated emails to delete: 418
+Γ£à Legitimate emails to keep: 208
+
+≡ƒôè Breakdown by reason:
+   - Marketing/Ad: 290
+   - Sender pattern: 100
+   - System/Transactional: 11
+   - Account Notification: 7
+   - Security Alert: 5
+   - OTP/Verification: 5
+
+≡ƒæÑ Breakdown by license/user:
+   - License 5: 340 emails
+   - License 4: 78 emails
+
+≡ƒôº Sample automated emails (first 10):
+   1. [Marketing/Ad] From: 963940137400
+       Body: ╪º┘ä╪│┘ä╪º┘à ╪╣┘ä┘è┘â┘à ╪¬┘à╪º┘à ╪Ñ┘å ╪┤╪º╪í ╪º┘ä┘ä┘ç ╪¼╪▓┘è╪¬┘à ╪«┘è╪▒╪º┘ï ┘ê╪┤┘â╪▒╪º┘ï ╪╣┘ä┘ë ╪º┘ä┘ç╪»┘è╪⌐...
+   2. [Marketing/Ad] From: 963940137400
+       Body: ╪º┘ä╪│┘ä╪º┘à ╪╣┘ä┘è┘â┘à ╪¬┘à╪º┘à ╪Ñ┘å ╪┤╪º╪í ╪º┘ä┘ä┘ç ╪¼╪▓┘è╪¬┘à ╪«┘è╪▒╪º┘ï ┘ê╪┤┘â╪▒╪º┘ï ╪╣┘ä┘ë ╪º┘ä┘ç╪»┘è╪⌐...
+   3. [Marketing/Ad] From: hello@info.n8n.io
+       Subject: Your free n8n license key to unlock selected paid 
+       Body: Hi there,
+ 
+ Please find your license key below to unlock selected paid features...
+   4. [Marketing/Ad] From: hello@info.n8n.io
+       Subject: Your free n8n license key to unlock selected paid 
+       Body: Hi there,
+ 
+ Please find your license key below to unlock selected paid features...
+   5. [Sender pattern] From: noreply@email.meta.com
+       Subject: Get started with Llama 4 Maverick
+       Body: Hi,
+ 
+ 
+ 
+ Thanks,
+ The Facebook team
+ 
+ 
+ 
+ ===================================...
+   6. [Sender pattern] From: noreply@email.meta.com
+       Subject: Get started with Llama 4 Maverick
+       Body: Hi,
+ 
+ 
+ 
+ Thanks,
+ The Facebook team
+ 
+ 
+ 
+ ===================================...
+   7. [System/Transactional] From: googleplay-noreply@google.com
+       Subject: Your Google Play Order Receipt from Dec 17, 2025
+       Body: Google Play
+ 
+ 
+ Thank you
+ 
+ 
+ You have signed up for a trial subscription from...
+   8. [System/Transactional] From: googleplay-noreply@google.com
+       Subject: Your Google Play Order Receipt from Dec 17, 2025
+       Body: Google Play
+ 
+ 
+ Thank you
+ 
+ 
+ You have signed up for a trial subscription from...
+   9. [Sender pattern] From: no-reply@swype.cards
+       Subject: Your Swype One Time Password (OTP)
+       Body: ( https://stage.swype.cards/ ) 
+                     
+                     
+    ...
+   10. [Sender pattern] From: no-reply@swype.cards
+       Subject: Your Swype One Time Password (OTP)
+       Body: ( https://stage.swype.cards/ ) 
+                     
+                     
+    ...
+   ... and 408 more
+
+------------------------------------------------------------
+Γä╣∩╕Å  This was a DRY RUN. No emails were deleted.
+    To actually delete, run: python cleanup_automated_emails.py --execute
+
+============================================================
+Cleanup complete!

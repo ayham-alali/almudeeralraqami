@@ -1,0 +1,61 @@
+﻿============================================================
+Al-Mudeer - Automated Email & Customer Cleanup
+============================================================
+Database Type: postgresql
+Mode: EXECUTE (will delete)
+------------------------------------------------------------
+
+≡ƒôº INBOX MESSAGES CLEANUP
+----------------------------------------
+Fetching all inbox messages...
+Total messages in database: 214
+
+≡ƒùæ∩╕Å  Automated emails to delete: 65
+Γ£à Legitimate emails to keep: 149
+
+≡ƒôè Breakdown by reason:
+   - Service Provider: 61
+   - Sender pattern: 2
+   - System/Transactional: 1
+   - OTP/Verification: 1
+
+≡ƒæÑ Breakdown by license/user:
+   - License 4: 63 emails
+   - License 5: 2 emails
+
+
+≡ƒæñ CUSTOMERS CLEANUP
+----------------------------------------
+Fetching all customers...
+Total customers in database: 47
+
+≡ƒùæ∩╕Å  Automated customers to delete: 24
+Γ£à Legitimate customers to keep: 23
+
+≡ƒôè Breakdown by reason:
+   - Sender pattern: 16
+   - Service Provider: 8
+
+≡ƒæñ Sample automated customers (first 10):
+   1. [Service Provider] Railway - hello@notify.railway.app
+   2. [Service Provider] Google Cloud - googlecloud@google.com
+   3. [Sender pattern] Windsurf Team - updates@windsurf.ai
+   4. [Service Provider] Google Search Console Team - sc-noreply@google.com
+   5. [Sender pattern] Swype - no-reply@swype.cards
+   6. [Service Provider] Google Play - googleplay-noreply@google.com
+   7. [Service Provider] Ahmed Mikhamer - invitations@linkedin.com
+   8. [Service Provider] ΓÇÅLinkedIn - messages-noreply@linkedin.com
+   9. [Sender pattern] Semrush Team - news@team.semrush.com
+   10. [Service Provider] ╪¬┘å╪¿┘è┘ç╪º╪¬ ╪º┘ä┘ê╪╕╪º╪ª┘ü ╪╣┘ä┘ë LinkedIn - jobalerts-noreply@linkedin.com
+   ... and 14 more
+
+============================================================
+ΓÜá∩╕Å  Are you sure you want to DELETE all automated items? (yes/no): 
+≡ƒùæ∩╕Å  Deleting automated emails...
+Γ£à Successfully deleted 65 automated emails!
+
+≡ƒùæ∩╕Å  Deleting automated customers...
+Γ£à Successfully deleted 24 automated customers!
+
+============================================================
+Cleanup complete!
