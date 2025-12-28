@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, Depends, Header, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -700,18 +700,8 @@ async def analyze_batch(
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-@app.websocket("/ws/{license_key}")
-async def websocket_endpoint(websocket: WebSocket, license_key: str):
-    """
-    WebSocket for real-time updates (new messages, notifications).
-    
-    Connect with: ws://host/ws/{license_key}
-    
-    Events pushed:
-    - new_message: When new inbox message arrives
-    - notification: When notification is created
-    - task_complete: When async task finishes
-    """
+async def handle_websocket_connection(websocket: WebSocket, license_key: str):
+    """Shared WebSocket connection handler"""
     # Validate license key
     license_result = await validate_license_key(license_key)
     if not license_result["valid"]:
@@ -730,6 +720,25 @@ async def websocket_endpoint(websocket: WebSocket, license_key: str):
                 await websocket.send_text('{"event":"pong"}')
     except WebSocketDisconnect:
         await manager.disconnect(websocket, license_id)
+
+
+@app.websocket("/ws")
+async def websocket_endpoint_query(websocket: WebSocket, license: str = Query(None)):
+    """
+    WebSocket endpoint supporting query parameter: /ws?license=KEY
+    """
+    if not license:
+        await websocket.close(code=4003, reason="License key required")
+        return
+    await handle_websocket_connection(websocket, license)
+
+
+@app.websocket("/ws/{license_key}")
+async def websocket_endpoint(websocket: WebSocket, license_key: str):
+    """
+    WebSocket endpoint supporting path parameter: /ws/KEY
+    """
+    await handle_websocket_connection(websocket, license_key)
 
 
 # ============ Paginated Endpoints ============
