@@ -22,10 +22,16 @@ async def migrate():
 
             # Backfill: Mark all 'approved', 'sent', 'auto_replied', 'ignored' as read
             print("Backfilling is_read for processed messages...")
-            await execute_sql(
-                db, 
-                "UPDATE inbox_messages SET is_read = 1 WHERE status IN ('approved', 'sent', 'auto_replied', 'ignored')"
-            )
+            if DB_TYPE == "postgresql":
+                await execute_sql(
+                    db, 
+                    "UPDATE inbox_messages SET is_read = TRUE WHERE status IN ('approved', 'sent', 'auto_replied', 'ignored')"
+                )
+            else:
+                await execute_sql(
+                    db, 
+                    "UPDATE inbox_messages SET is_read = 1 WHERE status IN ('approved', 'sent', 'auto_replied', 'ignored')"
+                )
             
             # For 'analyzed' messages (waiting for approval), let's keep them as unread (is_read=0)
             # so the user sees the badge until they click it.
