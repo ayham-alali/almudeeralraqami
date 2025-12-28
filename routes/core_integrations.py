@@ -1720,20 +1720,15 @@ async def analyze_inbox_message(
                         
                         elif channel == "telegram" or channel == "telegram_bot":
                             # Try Telegram Phone first
-                            from db_helper import get_db, fetch_one
-                            async with get_db() as db:
-                                ph_session = await fetch_one(
-                                    db, 
-                                    "SELECT session_string FROM telegram_phone_sessions WHERE license_key_id = ?", 
-                                    [license_id]
-                                )
+                            from models.telegram_config import get_telegram_phone_session_data
+                            session_string = await get_telegram_phone_session_data(license_id)
                             
-                            if ph_session and message.get("sender_contact"):
+                            if session_string and message.get("sender_contact"):
                                 from services.telegram_phone_service import TelegramPhoneService
                                 ph_svc = TelegramPhoneService()
                                 mid = message.get("channel_message_id")
                                 max_id = int(mid) if mid and mid.isdigit() else 0
-                                await ph_svc.mark_as_read(ph_session["session_string"], message["sender_contact"], max_id)
+                                await ph_svc.mark_as_read(session_string, message["sender_contact"], max_id)
                     except Exception as read_err:
                         print(f"Failed to auto-mark as read during auto-reply: {read_err}")
 

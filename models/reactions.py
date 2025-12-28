@@ -36,7 +36,7 @@ async def add_reaction(
             if DB_TYPE == "postgresql":
                 result = await execute_sql(db, """
                     INSERT INTO message_reactions (message_id, license_id, user_type, emoji)
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (?, ?, ?, ?)
                     ON CONFLICT (message_id, license_id, user_type, emoji) DO NOTHING
                     RETURNING id
                 """, (message_id, license_id, user_type, emoji))
@@ -90,7 +90,7 @@ async def remove_reaction(
             if DB_TYPE == "postgresql":
                 result = await execute_sql(db, """
                     DELETE FROM message_reactions 
-                    WHERE message_id = %s AND license_id = %s AND user_type = %s AND emoji = %s
+                    WHERE message_id = ? AND license_id = ? AND user_type = ? AND emoji = ?
                 """, (message_id, license_id, user_type, emoji))
             else:
                 result = await execute_sql(db, """
@@ -133,7 +133,7 @@ async def get_message_reactions(message_id: int) -> List[Dict]:
                     SELECT emoji, COUNT(*) as count, 
                            array_agg(DISTINCT user_type) as user_types
                     FROM message_reactions
-                    WHERE message_id = %s
+                    WHERE message_id = ?
                     GROUP BY emoji
                     ORDER BY count DESC
                 """, (message_id,))
@@ -189,7 +189,7 @@ async def get_reactions_for_messages(message_ids: List[int]) -> Dict[int, List[D
     
     async with get_db() as db:
         try:
-            placeholders = ",".join(["%s" if DB_TYPE == "postgresql" else "?"] * len(message_ids))
+            placeholders = ",".join(["?"] * len(message_ids))
             
             if DB_TYPE == "postgresql":
                 result = await execute_sql(db, f"""
@@ -244,7 +244,7 @@ async def has_user_reacted(
             if DB_TYPE == "postgresql":
                 result = await execute_sql(db, """
                     SELECT 1 FROM message_reactions
-                    WHERE message_id = %s AND license_id = %s AND user_type = %s AND emoji = %s
+                    WHERE message_id = ? AND license_id = ? AND user_type = ? AND emoji = ?
                     LIMIT 1
                 """, (message_id, license_id, user_type, emoji))
             else:
