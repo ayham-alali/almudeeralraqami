@@ -37,9 +37,13 @@ AUTOMATED_SENDER_PATTERNS = [
     r"^updates?@", r"^news@", r"^digest@",
     r"^subscriptions?@", r"^automated@", r"^system@",
     r"^donotreply@", r"^do-not-reply@", r"^reply-.*@",
+    r"^help@", r"^welcome@", r"^hello@", r"^team@",
+    r"^account-security@", r"^account-security-noreply@",
+    r"^elsa@", r"^support@", r"^sales@",
     r"@.*\.noreply\.", r"@bounce\.", r"@email\.",
     r"@mail\.", r"@mailer\.", r"@notifications?\.",
     r"@campaign\.", r"@newsletter\.", r"@promo\.",
+    r"@help\.",
 ]
 
 # Service provider noreply patterns (Google, Microsoft, Railway, etc.)
@@ -47,11 +51,15 @@ SERVICE_PROVIDER_PATTERNS = [
     r"googleone-noreply", r"google-noreply", r"@google\.com$",
     r"@notify\.railway\.app", r"@github\.com", r"@gitlab\.com",
     r"@microsoft\.com", r"clarity@microsoft", r"@azure\.com",
+    r"@accountprotection\.microsoft\.com",
     r"@vercel\.com", r"@netlify\.com", r"@heroku\.com",
     r"@dropbox\.com", r"@slack\.com", r"@zoom\.us",
     r"@stripe\.com", r"@paypal\.com", r"@linkedin\.com",
     r"@twitter\.com", r"@x\.com", r"@facebook\.com",
     r"@meta\.com", r"@apple\.com", r"@amazon\.com",
+    r"@openrouter\.ai", r"@elsanow\.io", r"@help\.elsanow\.io",
+    r"@openai\.com", r"@anthropic\.com", r"@deepmind\.com",
+    r"@aws\.amazon\.com", r"@cloud\.google\.com",
 ]
 
 OTP_PATTERNS = [
