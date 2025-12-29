@@ -803,7 +803,7 @@ async def configure_email(
 @router.get("/email/config")
 async def get_email_configuration(license: dict = Depends(get_license_from_header)):
     """Get current email configuration"""
-    config = await get_email_config(license["license_id"])
+    config = await get_email_config(license["license_id"], include_inactive=False)
     return {"config": config}
 
 
@@ -1044,7 +1044,7 @@ async def set_telegram_webhook(
 @router.get("/telegram/config")
 async def get_telegram_configuration(license: dict = Depends(get_license_from_header)):
     """Get current Telegram configuration"""
-    config = await get_telegram_config(license["license_id"])
+    config = await get_telegram_config(license["license_id"], include_inactive=False)
     return {"config": config}
 
 
