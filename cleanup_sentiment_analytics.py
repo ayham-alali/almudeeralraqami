@@ -41,9 +41,9 @@ async def check_and_fix_sentiments(database_url: str, dry_run: bool = True):
                 id,
                 license_key_id,
                 date,
-                positive,
-                negative,
-                neutral,
+                positive_sentiment,
+                negative_sentiment,
+                neutral_sentiment,
                 messages_received
             FROM analytics
             ORDER BY license_key_id, date
@@ -82,9 +82,9 @@ async def check_and_fix_sentiments(database_url: str, dry_run: bool = True):
                   AND sentiment IS NOT NULL
             """, license_id, analytics_date)
             
-            stored_positive = row['positive'] or 0
-            stored_negative = row['negative'] or 0
-            stored_neutral = row['neutral'] or 0
+            stored_positive = row['positive_sentiment'] or 0
+            stored_negative = row['negative_sentiment'] or 0
+            stored_neutral = row['neutral_sentiment'] or 0
             
             actual_positive = actual_counts['actual_positive'] or 0
             actual_negative = actual_counts['actual_negative'] or 0
@@ -144,9 +144,9 @@ async def check_and_fix_sentiments(database_url: str, dry_run: bool = True):
         # Current totals from analytics
         analytics_totals = await conn.fetchrow("""
             SELECT 
-                SUM(positive) as total_positive,
-                SUM(negative) as total_negative,
-                SUM(neutral) as total_neutral
+                SUM(positive_sentiment) as total_positive,
+                SUM(negative_sentiment) as total_negative,
+                SUM(neutral_sentiment) as total_neutral
             FROM analytics
         """)
         
@@ -199,7 +199,7 @@ async def check_and_fix_sentiments(database_url: str, dry_run: bool = True):
             for d in discrepancies:
                 await conn.execute("""
                     UPDATE analytics 
-                    SET positive = $1, negative = $2, neutral = $3
+                    SET positive_sentiment = $1, negative_sentiment = $2, neutral_sentiment = $3
                     WHERE id = $4
                 """, d['actual_positive'], d['actual_negative'], d['actual_neutral'], d['id'])
             
