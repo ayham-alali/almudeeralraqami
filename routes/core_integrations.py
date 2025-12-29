@@ -451,8 +451,8 @@ async def delete_integration_account(
             async with get_db() as db:
                 await execute_sql(
                     db,
-                    "UPDATE telegram_configs SET is_active = ? WHERE license_key_id = ?",
-                    [False, license_id]
+                    "DELETE FROM telegram_configs WHERE license_key_id = ?",
+                    [license_id]
                 )
                 await commit_db(db)
             return {"success": True, "message": "تم إلغاء تفعيل Telegram Bot"}
