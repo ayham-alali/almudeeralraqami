@@ -451,8 +451,8 @@ async def delete_integration_account(
             async with get_db() as db:
                 await execute_sql(
                     db,
-                    "UPDATE telegram_configs SET is_active = FALSE WHERE license_key_id = ?",
-                    [license_id]
+                    "UPDATE telegram_configs SET is_active = ? WHERE license_key_id = ?",
+                    [False, license_id]
                 )
                 await commit_db(db)
             return {"success": True, "message": "تم إلغاء تفعيل Telegram Bot"}
@@ -472,8 +472,8 @@ async def delete_integration_account(
             async with get_db() as db:
                 await execute_sql(
                     db,
-                    "UPDATE whatsapp_configs SET is_active = FALSE WHERE license_key_id = ?",
-                    [license_id]
+                    "UPDATE whatsapp_configs SET is_active = ? WHERE license_key_id = ?",
+                    [False, license_id]
                 )
                 await commit_db(db)
             return {"success": True, "message": "تم إلغاء تفعيل WhatsApp Business"}
