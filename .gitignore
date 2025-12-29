@@ -34,4 +34,6 @@ logs/
 .coverage
 htmlcov/
 
+*_output.txt
+
 service_account.json

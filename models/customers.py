@@ -468,86 +468,137 @@ def calculate_lead_score(
     intent: str = None,
     sentiment: str = None,
     sentiment_score: float = 0.0,
-    days_since_last_contact: int = None
+    days_since_last_contact: int = None,
+    purchase_count: int = 0,
+    total_purchase_value: float = 0.0,
+    days_since_first_contact: int = None
 ) -> int:
     """
-    Calculate lead score based on engagement metrics.
+    Calculate lead score based on engagement metrics and business value.
     Returns a score from 0-100.
+    
+    Scoring weights (rebalanced for accuracy):
+    - Purchase history: 0-35 points (most important)
+    - Message engagement: 0-25 points
+    - Engagement duration: 0-15 points
+    - Intent signals: 0-15 points
+    - Sentiment: 0-10 points
     """
     score = 0
     
-    # Base score from message count (0-30 points)
-    if total_messages == 0:
-        score += 0
-    elif total_messages == 1:
-        score += 5
-    elif total_messages <= 3:
-        score += 10
-    elif total_messages <= 10:
-        score += 20
-    else:
-        score += 30
-    
-    # Intent-based scoring (0-30 points)
-    if intent:
-        intent_lower = intent.lower()
-        if "عرض" in intent_lower or "طلب خدمة" in intent_lower or "شراء" in intent_lower:
-            score += 30
-        elif "استفسار" in intent_lower or "متابعة" in intent_lower:
+    # === PURCHASE HISTORY (0-35 points) - Most important factor ===
+    if purchase_count > 0:
+        # Base purchase points
+        if purchase_count >= 5:
             score += 20
-        elif "شكوى" in intent_lower:
+        elif purchase_count >= 3:
+            score += 15
+        elif purchase_count >= 1:
             score += 10
-        else:
+        
+        # Purchase value bonus
+        if total_purchase_value >= 1000:
+            score += 15
+        elif total_purchase_value >= 500:
+            score += 10
+        elif total_purchase_value >= 100:
             score += 5
     
-    # Sentiment-based scoring (0-25 points)
+    # === MESSAGE ENGAGEMENT (0-25 points) ===
+    if total_messages == 0:
+        score += 0
+    elif total_messages <= 2:
+        score += 5
+    elif total_messages <= 5:
+        score += 10
+    elif total_messages <= 15:
+        score += 15
+    elif total_messages <= 30:
+        score += 20
+    else:
+        score += 25
+    
+    # === ENGAGEMENT DURATION (0-15 points) - Time-based loyalty ===
+    if days_since_first_contact is not None:
+        if days_since_first_contact >= 90:  # 3+ months
+            score += 15
+        elif days_since_first_contact >= 30:  # 1+ month
+            score += 10
+        elif days_since_first_contact >= 7:  # 1+ week
+            score += 5
+        # Less than a week: no bonus
+    
+    # === INTENT SIGNALS (0-15 points) - Reduced weight ===
+    if intent:
+        intent_lower = intent.lower()
+        if "شراء" in intent_lower or "طلب" in intent_lower:
+            score += 15
+        elif "عرض" in intent_lower or "سعر" in intent_lower:
+            score += 10
+        elif "استفسار" in intent_lower:
+            score += 5
+        # Generic intents: no bonus
+    
+    # === SENTIMENT (0-10 points) - Reduced weight ===
     if sentiment:
         sentiment_lower = sentiment.lower()
         if "إيجابي" in sentiment_lower or "positive" in sentiment_lower:
-            score += 25
+            score += 10
         elif "محايد" in sentiment_lower or "neutral" in sentiment_lower:
-            score += 15
-        else:
             score += 5
+        # Negative: no bonus
     
-    # Sentiment score bonus (0-10 points)
-    if sentiment_score > 0.7:
-        score += 10
-    elif sentiment_score > 0.4:
-        score += 5
-    elif sentiment_score < -0.3:
-        score -= 5
-    
-    # Recency bonus (0-5 points) - recent contact is better
+    # === RECENCY ADJUSTMENT (-5 to +5 points) ===
     if days_since_last_contact is not None:
-        if days_since_last_contact <= 1:
-            score += 5
-        elif days_since_last_contact <= 7:
-            score += 3
-        elif days_since_last_contact <= 30:
-            score += 1
+        if days_since_last_contact <= 3:
+            score += 5  # Very recent
+        elif days_since_last_contact <= 14:
+            score += 2  # Recent
+        elif days_since_last_contact > 60:
+            score -= 5  # Inactive penalty
     
     # Ensure score is between 0-100
     return max(0, min(100, score))
 
 
-def determine_segment(lead_score: int, total_messages: int, is_vip: bool = False) -> str:
+def determine_segment(
+    lead_score: int, 
+    total_messages: int, 
+    is_vip: bool = False,
+    purchase_count: int = 0
+) -> str:
     """
-    Determine customer segment based on lead score and other factors.
+    Determine customer segment based on lead score and business factors.
+    
+    Segments (with stricter requirements):
+    - VIP: Manually marked
+    - High-Value (عميل استراتيجي): Score 75+ AND has purchases
+    - Warm Lead (عميل واعد): Score 50+ OR has purchases
+    - Cold Lead (غير متفاعل): Score 25-49, some engagement
+    - New (جديد): No messages yet
+    - Low-Engagement (غير نشط): Low score, minimal engagement
     """
     if is_vip:
         return "VIP"
     
-    if lead_score >= 70:
+    # High-Value REQUIRES actual purchases - can't be strategic without transactions
+    if lead_score >= 75 and purchase_count > 0:
         return "High-Value"
-    elif lead_score >= 50:
+    
+    # Warm Lead: Good engagement OR has made a purchase
+    if lead_score >= 50 or purchase_count > 0:
         return "Warm Lead"
-    elif lead_score >= 30:
+    
+    # Cold Lead: Some engagement but not converting
+    if lead_score >= 25:
         return "Cold Lead"
-    elif total_messages == 0:
+    
+    # New: Never contacted
+    if total_messages == 0:
         return "New"
-    else:
-        return "Low-Engagement"
+    
+    # Low engagement: Has contacted but very low score
+    return "Low-Engagement"
 
 
 async def update_customer_lead_score(
@@ -559,13 +610,14 @@ async def update_customer_lead_score(
 ) -> bool:
     """
     Update customer lead score and segment based on new message analysis.
-    Uses get_db() for cross-database compatibility.
+    Now includes purchase history and engagement duration in scoring.
     """
     async with get_db() as db:
-        # Get current customer data
+        # Get current customer data including is_vip and created_at
         customer = await fetch_one(
             db,
-            "SELECT total_messages, sentiment_score, last_contact_at FROM customers WHERE id = ? AND license_key_id = ?",
+            """SELECT total_messages, sentiment_score, last_contact_at, is_vip, created_at 
+               FROM customers WHERE id = ? AND license_key_id = ?""",
             [customer_id, license_id]
         )
         
@@ -574,40 +626,52 @@ async def update_customer_lead_score(
         
         total_messages = customer.get("total_messages", 0) or 0
         current_sentiment_score = customer.get("sentiment_score", 0.0) or 0.0
+        is_vip = customer.get("is_vip", False) or False
+        
+        # Get purchase history stats
+        purchase_stats = await fetch_one(
+            db,
+            """SELECT COUNT(*) as purchase_count, COALESCE(SUM(amount), 0) as total_value
+               FROM purchases WHERE customer_id = ?""",
+            [customer_id]
+        )
+        purchase_count = purchase_stats.get("purchase_count", 0) if purchase_stats else 0
+        total_purchase_value = float(purchase_stats.get("total_value", 0) or 0) if purchase_stats else 0.0
         
         # Calculate days since last contact
         last_contact = customer.get("last_contact_at")
-        days_since = None
+        days_since_last = None
         if last_contact:
-            if isinstance(last_contact, str):
-                try:
-                    last_contact_dt = datetime.fromisoformat(last_contact.replace('Z', '+00:00'))
-                except:
-                    last_contact_dt = datetime.utcnow()
-            elif isinstance(last_contact, datetime):
-                last_contact_dt = last_contact
-            elif isinstance(last_contact, date):
-                # Convert date to datetime (start of day)
-                last_contact_dt = datetime.combine(last_contact, datetime.min.time())
-            else:
-                last_contact_dt = datetime.utcnow()
-            
-            days_since = (datetime.utcnow() - last_contact_dt.replace(tzinfo=None)).days
+            last_contact_dt = _parse_datetime(last_contact)
+            if last_contact_dt:
+                days_since_last = (datetime.utcnow() - last_contact_dt.replace(tzinfo=None)).days
         
-        # Calculate new lead score
+        # Calculate days since first contact (customer creation = first contact)
+        first_contact = customer.get("created_at")
+        days_since_first = None
+        if first_contact:
+            first_contact_dt = _parse_datetime(first_contact)
+            if first_contact_dt:
+                days_since_first = (datetime.utcnow() - first_contact_dt.replace(tzinfo=None)).days
+        
+        # Calculate new lead score with all factors
         new_score = calculate_lead_score(
             total_messages=total_messages,
             intent=intent,
             sentiment=sentiment,
             sentiment_score=current_sentiment_score,
-            days_since_last_contact=days_since
+            days_since_last_contact=days_since_last,
+            purchase_count=purchase_count,
+            total_purchase_value=total_purchase_value,
+            days_since_first_contact=days_since_first
         )
         
-        # Determine segment
+        # Determine segment with purchase requirement
         new_segment = determine_segment(
             lead_score=new_score,
             total_messages=total_messages,
-            is_vip=customer.get("is_vip", False)
+            is_vip=is_vip,
+            purchase_count=purchase_count
         )
         
         # Update customer
@@ -619,6 +683,20 @@ async def update_customer_lead_score(
         await commit_db(db)
         
         return True
+
+
+def _parse_datetime(value) -> datetime:
+    """Helper to parse datetime from various formats."""
+    if isinstance(value, datetime):
+        return value
+    elif isinstance(value, date):
+        return datetime.combine(value, datetime.min.time())
+    elif isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except:
+            return None
+    return None
 
 
 # ============ Analytics ============
