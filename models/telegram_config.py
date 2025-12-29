@@ -233,11 +233,11 @@ async def get_telegram_phone_session_data(license_id: int) -> Optional[str]:
 
 
 async def deactivate_telegram_phone_session(license_id: int) -> bool:
-    """Deactivate Telegram phone session."""
+    """Delete Telegram phone session."""
     async with get_db() as db:
         await execute_sql(
             db,
-            "UPDATE telegram_phone_sessions SET is_active = FALSE WHERE license_key_id = ?",
+            "DELETE FROM telegram_phone_sessions WHERE license_key_id = ?",
             [license_id],
         )
         await commit_db(db)

@@ -434,10 +434,14 @@ async def delete_integration_account(
         # Deactivate email config
         email_cfg = await get_email_config(license_id)
         if email_cfg:
-            await update_email_config_settings(
-                license_id=license_id,
-                is_active=False
-            )
+            from db_helper import get_db, execute_sql, commit_db
+            async with get_db() as db:
+                await execute_sql(
+                    db,
+                    "DELETE FROM email_configs WHERE license_key_id = ?",
+                    [license_id]
+                )
+                await commit_db(db)
             return {"success": True, "message": "تم إلغاء تفعيل حساب البريد الإلكتروني"}
         else:
             raise HTTPException(status_code=404, detail="لا يوجد حساب بريد إلكتروني مرتبط")
@@ -472,8 +476,8 @@ async def delete_integration_account(
             async with get_db() as db:
                 await execute_sql(
                     db,
-                    "UPDATE whatsapp_configs SET is_active = ? WHERE license_key_id = ?",
-                    [False, license_id]
+                    "DELETE FROM whatsapp_configs WHERE license_key_id = ?",
+                    [license_id]
                 )
                 await commit_db(db)
             return {"success": True, "message": "تم إلغاء تفعيل WhatsApp Business"}
