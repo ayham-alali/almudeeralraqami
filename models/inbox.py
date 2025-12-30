@@ -643,35 +643,71 @@ async def ignore_chat(license_id: int, sender_contact: str) -> int:
     """
     Mark all messages from a sender as 'ignored' (entire chat).
     Returns the count of messages updated.
+    
+    Robustness:
+    - Finds all aliases (sender_id, sender_contact) associated with this connection
+    - Updates all messages matching ANY of these aliases
+    - Commits immediately
     """
+    from logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    logger.info(f"ignore_chat called: license_id={license_id}, sender_contact='{sender_contact}'")
+    
     async with get_db() as db:
-        # Update all messages from this sender
+        # 1. Find all sender_ids and sender_contacts associated with this contact
+        # This handles cases where some messages have username and others have user_id
+        aliases_rows = await fetch_all(
+            db,
+            """
+            SELECT DISTINCT sender_contact, sender_id 
+            FROM inbox_messages 
+            WHERE license_key_id = ? 
+            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+            """,
+            [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
+        )
+        
+        # Collect all unique identifiers
+        identifiers = set()
+        identifiers.add(sender_contact)
+        for r in aliases_rows:
+            if r.get("sender_contact"): identifiers.add(r["sender_contact"])
+            if r.get("sender_id"): identifiers.add(str(r["sender_id"]))
+            
+        logger.info(f"Identified aliases for ignore: {identifiers}")
+        
+        # Build dynamic OR query
+        conditions = []
+        params = [license_id]
+        for ident in identifiers:
+            conditions.append("sender_contact = ? OR sender_id = ?")
+            params.extend([ident, ident])
+            
+        where_clause = f"license_key_id = ? AND ({' OR '.join(conditions)})"
+        
+        # Update
         await execute_sql(
             db,
-            """
-            UPDATE inbox_messages 
-            SET status = 'ignored'
-            WHERE license_key_id = ?
-            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
-            """,
-            [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
+            f"UPDATE inbox_messages SET status = 'ignored' WHERE {where_clause}",
+            params
         )
         
-        # CRITICAL: Commit immediately after UPDATE to persist the change
+        # CRITICAL: Commit immediately
         await commit_db(db)
         
-        # Get count of affected rows (after commit)
+        # Count result
+        # Note: We can just return the number of updated rows if the driver supported it,
+        # but for now we count again.
         row = await fetch_one(
             db,
-            """
-            SELECT COUNT(*) as count FROM inbox_messages
-            WHERE license_key_id = ?
-            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
-            AND status = 'ignored'
-            """,
-            [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
+            f"SELECT COUNT(*) as count FROM inbox_messages WHERE {where_clause} AND status = 'ignored'",
+            params
         )
-        return row["count"] if row else 0
+        result_count = row["count"] if row else 0
+        logger.info(f"Messages now with status='ignored': {result_count}")
+        
+        return result_count
 
 
 async def approve_chat_messages(license_id: int, sender_contact: str) -> int:

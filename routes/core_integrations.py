@@ -1443,6 +1443,8 @@ async def approve_message(
     """Approve or ignore a message/chat"""
     from models import ignore_chat, approve_chat_messages
     from models.inbox import get_inbox_message_by_id
+    from logging_config import get_logger
+    logger = get_logger(__name__)
     
     message = await get_inbox_message_by_id(message_id, license["license_id"])
     if not message:
@@ -1451,11 +1453,14 @@ async def approve_message(
     if approval.action == "ignore":
         # Ignore entire chat - mark all messages from this sender as ignored
         sender_contact = message.get("sender_contact") or message.get("sender_id") or ""
+        logger.info(f"IGNORE action: message_id={message_id}, sender_contact='{sender_contact}', sender_id='{message.get('sender_id')}', sender_name='{message.get('sender_name')}'")
         if sender_contact:
             count = await ignore_chat(license["license_id"], sender_contact)
+            logger.info(f"ignore_chat returned count={count}")
             return {"success": True, "message": f"تم تجاهل المحادثة ({count} رسائل)"}
         else:
             # Fallback: just ignore this single message
+            logger.warning(f"No sender_contact found for message {message_id}, ignoring single message")
             await update_inbox_status(message_id, "ignored")
             return {"success": True, "message": "تم تجاهل الرسالة"}
     

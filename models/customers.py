@@ -957,7 +957,11 @@ async def get_preferences(license_id: int) -> dict:
             [license_id]
         )
         if row:
-            return dict(row)
+            prefs = dict(row)
+            # CRITICAL: Ensure notifications_enabled defaults to True if NULL in DB
+            if prefs.get("notifications_enabled") is None:
+                prefs["notifications_enabled"] = True
+            return prefs
 
         # Create default preferences including AI tone defaults
         await execute_sql(
@@ -967,10 +971,11 @@ async def get_preferences(license_id: int) -> dict:
                 license_key_id,
                 tone,
                 language,
-                preferred_languages
-            ) VALUES (?, 'formal', 'ar', 'ar')
+                preferred_languages,
+                notifications_enabled
+            ) VALUES (?, 'formal', 'ar', 'ar', ?)
             """,
-            [license_id]
+            [license_id, True]
         )
         await commit_db(db)
 
@@ -995,6 +1000,9 @@ async def get_preferences(license_id: int) -> dict:
 
 async def update_preferences(license_id: int, **kwargs) -> bool:
     """Update user preferences"""
+    from logging_config import get_logger
+    logger = get_logger(__name__)
+    
     allowed = [
         'dark_mode',
         'notifications_enabled',
@@ -1013,7 +1021,10 @@ async def update_preferences(license_id: int, **kwargs) -> bool:
     ]
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     
+    logger.info(f"update_preferences called: license_id={license_id}, updates={updates}")
+    
     if not updates:
+        logger.info("No updates to apply")
         return False
     
     set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
@@ -1027,12 +1038,14 @@ async def update_preferences(license_id: int, **kwargs) -> bool:
             set_clause_pg = ", ".join(f"{k} = EXCLUDED.{k}" for k in updates.keys())
             cols = ", ".join(["license_key_id"] + list(updates.keys()))
             placeholders = ", ".join(["?"] * (1 + len(updates)))
-            await execute_sql(
-                db,
-                f"""
+            sql = f"""
                 INSERT INTO user_preferences ({cols}) VALUES ({placeholders})
                 ON CONFLICT(license_key_id) DO UPDATE SET {set_clause_pg}
-                """,
+                """
+            logger.info(f"PostgreSQL UPSERT SQL: {sql.strip()}, params: {[license_id] + update_values}")
+            await execute_sql(
+                db,
+                sql,
                 [license_id] + update_values
             )
         else:
@@ -1048,6 +1061,7 @@ async def update_preferences(license_id: int, **kwargs) -> bool:
                 [license_id] + update_values + update_values  # Values for INSERT + UPDATE
             )
         await commit_db(db)
+        logger.info("Preferences update completed successfully")
         return True
 
 
