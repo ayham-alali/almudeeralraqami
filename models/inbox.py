@@ -1,5 +1,4 @@
-"""
-Al-Mudeer - Inbox/Outbox Models
+"""Al-Mudeer - Inbox/Outbox Models
 Unified message inbox and outbox management
 """
 
@@ -114,6 +113,7 @@ async def save_inbox_message(
             pass
         
         return message_id
+
 
 
 async def update_inbox_analysis(
@@ -657,7 +657,10 @@ async def ignore_chat(license_id: int, sender_contact: str) -> int:
             [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
         )
         
-        # Get count of affected rows
+        # CRITICAL: Commit immediately after UPDATE to persist the change
+        await commit_db(db)
+        
+        # Get count of affected rows (after commit)
         row = await fetch_one(
             db,
             """
@@ -668,7 +671,6 @@ async def ignore_chat(license_id: int, sender_contact: str) -> int:
             """,
             [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
         )
-        await commit_db(db)
         return row["count"] if row else 0
 
 
