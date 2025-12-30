@@ -694,20 +694,26 @@ async def approve_chat_messages(license_id: int, sender_contact: str) -> int:
         
         # Get count of affected rows (optional, or just return 0 to be fast)
         # For meaningful return value:
+        # Use database-agnostic date comparison
+        if DB_TYPE == "postgresql":
+            date_filter = "processed_at >= NOW() - INTERVAL '1 minute'"
+        else:
+            date_filter = "processed_at >= datetime('now', '-1 minute')"
+        
         row = await fetch_one(
             db,
-            """
+            f"""
             SELECT COUNT(*) as count FROM inbox_messages
             WHERE license_key_id = ?
             AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
             AND status = 'approved'
-            AND processed_at >= date('now', '-1 minute') 
+            AND {date_filter}
             """, 
             # Note: The count query is tricky because we just updated them. 
             # Simpler to just return 1 or ignore count to avoid complex logic.
             [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
         )
-        # Actually, let's just return row count from UPDATE if possible?
+        # Actually, let's just return row count from UPDATE if possible? 
         # execute_sql usually returns cursor/result. 
         # But our helper returns None. 
         # So we'll just return 0 or query count of all approved.

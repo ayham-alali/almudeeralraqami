@@ -24,7 +24,7 @@ async def ensure_chat_features_schema():
             await execute_sql(db, """
                 CREATE TABLE IF NOT EXISTS message_reactions (
                     id SERIAL PRIMARY KEY,
-                    message_id INTEGER NOT NULL,
+                    message_id BIGINT NOT NULL,
                     license_id INTEGER NOT NULL,
                     user_type VARCHAR(20) DEFAULT 'agent',
                     emoji VARCHAR(10) NOT NULL,
@@ -37,7 +37,7 @@ async def ensure_chat_features_schema():
                 ON message_reactions(message_id)
             """)
         else:
-            # SQLite
+            # SQLite (INTEGER is 64-bit in SQLite, so it's fine)
             await execute_sql(db, """
                 CREATE TABLE IF NOT EXISTS message_reactions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,7 +87,7 @@ async def ensure_chat_features_schema():
         forward_columns = [
             ("is_forwarded", "BOOLEAN DEFAULT FALSE" if DB_TYPE == "postgresql" else "INTEGER DEFAULT 0"),
             ("forwarded_from", "TEXT"),
-            ("forwarded_message_id", "INTEGER"),
+            ("forwarded_message_id", "BIGINT" if DB_TYPE == "postgresql" else "INTEGER"),
         ]
         
         for col_name, col_type in forward_columns:

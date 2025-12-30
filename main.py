@@ -178,6 +178,15 @@ async def lifespan(app: FastAPI):
             logger.info("Chat features schema verified (reactions, presence, voice)")
         except Exception as e:
             logger.warning(f"Chat features schema migration warning: {e}")
+        
+        # Fix int32 range issues for message IDs (BIGINT migration)
+        try:
+            from migrations.fix_int32_range import fix_int32_range_issues
+            await fix_int32_range_issues()
+            logger.info("Int32 range fixes applied (message IDs now BIGINT)")
+        except Exception as e:
+            logger.warning(f"Int32 range fix migration warning: {e}")
+        
         demo_key = await create_demo_license()
         if demo_key:
             logger.info(f"Demo license key created: {demo_key[:20]}...")
