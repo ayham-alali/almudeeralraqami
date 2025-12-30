@@ -1103,6 +1103,18 @@ async def telegram_webhook(
         logger.debug("Ignoring bot message (sender is a bot)")
         return {"ok": True}  # Ignore bot messages
     
+    # Enhanced bot detection: Check username and name for "bot" or "api" markers
+    username = (parsed.get("username") or "").lower()
+    full_name = (f"{parsed.get('first_name', '')} {parsed.get('last_name', '')}").lower()
+    
+    if username.endswith("bot") or "bot" in username.split('_'):
+        logger.debug(f"Ignoring bot-like username: {username}")
+        return {"ok": True}
+        
+    if "api" in full_name or "bot" in full_name:
+        logger.debug(f"Ignoring bot-like name: {full_name}")
+        return {"ok": True}
+    
     # Only process private messages for now
     if parsed["chat_type"] != "private":
         logger.debug(f"Ignoring non-private message, chat_type: {parsed['chat_type']}")
