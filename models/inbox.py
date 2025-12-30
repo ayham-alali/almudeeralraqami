@@ -142,7 +142,7 @@ async def update_inbox_analysis(
                     language = ?, dialect = ?,
                     ai_summary = ?, ai_draft_response = ?,
                     status = 'analyzed', processed_at = ?
-                WHERE id = ?
+                WHERE id = ? AND (status IS NULL OR status = 'pending')
                 """,
                 [intent, urgency, sentiment, language, dialect, summary, draft_response, ts_value, message_id],
             )
@@ -160,7 +160,7 @@ async def update_inbox_analysis(
                         intent = ?, urgency = ?, sentiment = ?,
                         ai_summary = ?, ai_draft_response = ?,
                         status = 'analyzed', processed_at = ?
-                    WHERE id = ?
+                    WHERE id = ? AND (status IS NULL OR status = 'pending')
                     """,
                     [intent, urgency, sentiment, summary, draft_response, ts_value, message_id],
                 )
