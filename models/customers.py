@@ -1017,18 +1017,36 @@ async def update_preferences(license_id: int, **kwargs) -> bool:
         return False
     
     set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
-    values = list(updates.values()) + [license_id]
+    update_values = list(updates.values())
 
     async with get_db() as db:
-        # Use UPSERT pattern
-        await execute_sql(
-            db,
-            f"""
-            INSERT INTO user_preferences (license_key_id) VALUES (?)
-            ON CONFLICT(license_key_id) DO UPDATE SET {set_clause}
-            """.replace("DO UPDATE SET", f"DO UPDATE SET {set_clause}"),
-            [license_id] + list(updates.values())
-        )
+        # Use UPSERT pattern - INSERT with ON CONFLICT UPDATE
+        # PostgreSQL and SQLite both support this syntax
+        if DB_TYPE == "postgresql":
+            # PostgreSQL: use EXCLUDED reference for cleaner syntax
+            set_clause_pg = ", ".join(f"{k} = EXCLUDED.{k}" for k in updates.keys())
+            cols = ", ".join(["license_key_id"] + list(updates.keys()))
+            placeholders = ", ".join(["?"] * (1 + len(updates)))
+            await execute_sql(
+                db,
+                f"""
+                INSERT INTO user_preferences ({cols}) VALUES ({placeholders})
+                ON CONFLICT(license_key_id) DO UPDATE SET {set_clause_pg}
+                """,
+                [license_id] + update_values
+            )
+        else:
+            # SQLite: use standard ON CONFLICT DO UPDATE SET with explicit values
+            cols = ", ".join(["license_key_id"] + list(updates.keys()))
+            placeholders = ", ".join(["?"] * (1 + len(updates)))
+            await execute_sql(
+                db,
+                f"""
+                INSERT INTO user_preferences ({cols}) VALUES ({placeholders})
+                ON CONFLICT(license_key_id) DO UPDATE SET {set_clause}
+                """,
+                [license_id] + update_values + update_values  # Values for INSERT + UPDATE
+            )
         await commit_db(db)
         return True
 
@@ -1044,28 +1062,51 @@ async def create_notification(
     link: str = None
 ) -> int:
     """Create a new notification and send Web Push if subscribers exist."""
+    notification_id = 0
+    
     async with get_db() as db:
-        await execute_sql(
-            db,
-            """
-            INSERT INTO notifications (license_key_id, type, priority, title, message, link)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            [license_id, notification_type, priority, title, message, link],
-        )
+        try:
+            await execute_sql(
+                db,
+                """
+                INSERT INTO notifications (license_key_id, type, priority, title, message, link)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [license_id, notification_type, priority, title, message, link],
+            )
 
-        row = await fetch_one(
-            db,
-            """
-            SELECT id FROM notifications
-            WHERE license_key_id = ?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            [license_id],
-        )
-        await commit_db(db)
-        notification_id = row["id"] if row else 0
+            row = await fetch_one(
+                db,
+                """
+                SELECT id FROM notifications
+                WHERE license_key_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                [license_id],
+            )
+            await commit_db(db)
+            notification_id = row["id"] if row else 0
+        except Exception as e:
+            # Handle NotNullViolationError for missing SERIAL/AUTOINCREMENT on 'id'
+            # This can happen on PostgreSQL if table was created without proper SERIAL type
+            if "null value in column \"id\"" in str(e):
+                # Manual ID generation fallback
+                max_row = await fetch_one(db, "SELECT MAX(id) as max_id FROM notifications")
+                next_id = (max_row.get("max_id") or 0) + 1
+                
+                await execute_sql(
+                    db,
+                    """
+                    INSERT INTO notifications (id, license_key_id, type, priority, title, message, link)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [next_id, license_id, notification_type, priority, title, message, link],
+                )
+                await commit_db(db)
+                notification_id = next_id
+            else:
+                raise e
     
     # Send Web Push notification in background (non-blocking)
     try:
