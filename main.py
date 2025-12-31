@@ -73,7 +73,7 @@ from models import (
 import logging
 logger = logging.getLogger("startup")
 try:
-    from routes import integrations_router, features_router, whatsapp_router, export_router, notifications_router, purchases_router
+    from routes import integrations_router, features_router, whatsapp_router, export_router, notifications_router, purchases_router, knowledge_router
     logger.info("Successfully imported integration routes")
 except ImportError as e:
     logger.error(f"Failed to import routes: {e}")
@@ -345,6 +345,7 @@ app.include_router(whatsapp_router)        # WhatsApp Business
 app.include_router(export_router)          # Export & Reports
 app.include_router(notifications_router)   # Smart Notifications & Integrations
 app.include_router(purchases_router)       # Customer Purchases
+app.include_router(knowledge_router)       # Knowledge Base (RAG)
 app.include_router(subscription_router)    # Subscription Key Management
 
 # JWT Authentication routes

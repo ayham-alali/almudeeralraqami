@@ -6,6 +6,7 @@ from .whatsapp import router as whatsapp_router
 from .export import router as export_router
 from .notifications import router as notifications_router
 from .purchases import router as purchases_router
+from .knowledge import router as knowledge_router
 
 # Subscription router is imported directly in main.py to avoid circular imports
 # from .subscription import router as subscription_router
@@ -16,6 +17,7 @@ __all__ = [
     'whatsapp_router',
     'export_router',
     'notifications_router',
-    'purchases_router'
+    'purchases_router',
+    'knowledge_router'
 ]
 
