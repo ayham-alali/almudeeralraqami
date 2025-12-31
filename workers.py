@@ -48,6 +48,7 @@ from services.whatsapp_service import WhatsAppService
 from services.gmail_oauth_service import GmailOAuthService
 from services.gmail_api_service import GmailAPIService
 from services.telegram_phone_service import TelegramPhoneService
+from services.backfill_service import get_backfill_service
 
 # Import models
 from models import (
