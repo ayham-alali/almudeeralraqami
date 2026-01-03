@@ -459,14 +459,28 @@ async def delete_subscription(
             # Delete usage logs
                 # Delete logs and related data
                 if DB_TYPE == "postgresql":
-                    await execute_sql(db, "DELETE FROM usage_logs WHERE license_key_id = $1", [license_id])
-                    await execute_sql(db, "DELETE FROM crm_entries WHERE license_key_id = $1", [license_id])
-                    await execute_sql(db, "DELETE FROM email_configs WHERE license_key_id = $1", [license_id])
-                    await execute_sql(db, "DELETE FROM telegram_configs WHERE license_key_id = $1", [license_id])
-                    # Fix: Delete user preferences to avoid FK violation
-                    await execute_sql(db, "DELETE FROM user_preferences WHERE license_key_id = $1", [license_id])
-                    await execute_sql(db, "DELETE FROM license_keys WHERE id = $1", [license_id])
+                    async with db.transaction():
+                        # Delete deep dependencies first: Orders -> Customers
+                        await execute_sql(db, "DELETE FROM orders WHERE customer_contact IN (SELECT contact FROM customers WHERE license_key_id = $1)", [license_id])
+                        await execute_sql(db, "DELETE FROM customers WHERE license_key_id = $1", [license_id])
+                        
+                        # Delete service configs and logs
+                        await execute_sql(db, "DELETE FROM usage_logs WHERE license_key_id = $1", [license_id])
+                        await execute_sql(db, "DELETE FROM crm_entries WHERE license_key_id = $1", [license_id])
+                        await execute_sql(db, "DELETE FROM email_configs WHERE license_key_id = $1", [license_id])
+                        await execute_sql(db, "DELETE FROM telegram_configs WHERE license_key_id = $1", [license_id])
+                        
+                        # Fix: Delete user preferences to avoid FK violation
+                        await execute_sql(db, "DELETE FROM user_preferences WHERE license_key_id = $1", [license_id])
+                        
+                        # Finally delete the subscription
+                        await execute_sql(db, "DELETE FROM license_keys WHERE id = $1", [license_id])
                 else:
+                    # SQLite (no async transaction context manager in the same way, rely on final commit)
+                    # Delete deep dependencies
+                    await execute_sql(db, "DELETE FROM orders WHERE customer_contact IN (SELECT contact FROM customers WHERE license_key_id = ?)", [license_id])
+                    await execute_sql(db, "DELETE FROM customers WHERE license_key_id = ?", [license_id])
+                    
                     await execute_sql(db, "DELETE FROM usage_logs WHERE license_key_id = ?", [license_id])
                     await execute_sql(db, "DELETE FROM crm_entries WHERE license_key_id = ?", [license_id])
                     await execute_sql(db, "DELETE FROM email_configs WHERE license_key_id = ?", [license_id])
