@@ -203,6 +203,7 @@ async def get_intent_analytics(
     return {"data": rows}
 
 
+
 @router.get("/analytics/by-language")
 async def get_language_analytics(
     days: int = 30,
@@ -232,6 +233,37 @@ async def get_language_analytics(
         # Column may not exist in older schemas
         if "language" in str(e).lower() and "does not exist" in str(e).lower():
             return {"data": [], "note": "Language analytics not available - database schema update required"}
+        raise
+
+
+@router.get("/analytics/by-sentiment")
+async def get_sentiment_analytics(
+    days: int = 30,
+    license: dict = Depends(get_license_from_header)
+):
+    """Get message counts per sentiment for the given period."""
+    cutoff_ts = datetime.utcnow() - timedelta(days=days)
+
+    try:
+        async with get_db() as db:
+            rows = await fetch_all(
+                db,
+                """
+                SELECT sentiment, COUNT(*) as messages
+                FROM inbox_messages
+                WHERE license_key_id = ?
+                  AND created_at >= ?
+                  AND sentiment IS NOT NULL
+                  AND sentiment != ''
+                GROUP BY sentiment
+                ORDER BY messages DESC
+                """,
+                [license["license_id"], cutoff_ts],
+            )
+        return {"data": rows}
+    except Exception as e:
+        if "sentiment" in str(e).lower() and "does not exist" in str(e).lower():
+            return {"data": [], "note": "Sentiment analytics not available - database schema update required"}
         raise
 
 
