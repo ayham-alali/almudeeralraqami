@@ -520,6 +520,7 @@ async def validate_license(request: Request, data: LicenseKeyValidation):
     return LicenseKeyResponse(
         valid=result["valid"],
         company_name=result.get("company_name"),
+        created_at=result.get("created_at"),
         expires_at=result.get("expires_at"),
         requests_remaining=result.get("requests_remaining"),
         error=result.get("error")
