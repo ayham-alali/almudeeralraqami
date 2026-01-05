@@ -1119,16 +1119,16 @@ class MessagePoller:
                             if customer and customer.get("id"):
                                 customer_id = customer["id"]
                                 
-                                # Increment message count
-                                await increment_customer_messages(customer_id)
-                                
-                                # Link message to customer (check if exists first to avoid duplicates)
+                                # Check if already linked to avoid duplicates
                                 existing = await fetch_one(
                                     db,
                                     "SELECT 1 FROM customer_messages WHERE customer_id = ? AND inbox_message_id = ?",
                                     [customer_id, message_id]
                                 )
                                 if not existing:
+                                    # Increment message count (only for new links)
+                                    await increment_customer_messages(customer_id)
+
                                     from db_helper import DB_TYPE
                                     if DB_TYPE == "postgresql":
                                         await execute_sql(

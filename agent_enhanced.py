@@ -480,7 +480,8 @@ Write only the response in {lang_name} (3-6 lines), no explanation:"""
             asyncio.create_task(update_daily_analytics(
                 license_id=state["preferences"]["license_key_id"],
                 messages_replied=1,
-                sentiment=state.get("sentiment", "محايد")
+                sentiment=state.get("sentiment", "محايد"),
+                time_saved_seconds=180 # 3 minutes per AI response
             ))
         except Exception as e:
             print(f"Analytics reply update failed: {e}")
