@@ -147,3 +147,31 @@ async def reset_force_update(
         "message": "تم إلغاء التحديث الإجباري",
         "trigger_time": _last_update_trigger_time,
     }
+
+
+@router.get("/download/almudeer.apk", summary="Download mobile app APK")
+async def download_apk():
+    """
+    Download the Al-Mudeer mobile app APK.
+    Returns the APK file with proper headers for browser download.
+    """
+    from fastapi.responses import FileResponse
+    
+    # Path to APK file
+    apk_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "download", "almudeer.apk")
+    
+    if not os.path.exists(apk_path):
+        raise HTTPException(
+            status_code=404,
+            detail="APK file not found. Please contact support."
+        )
+    
+    return FileResponse(
+        path=apk_path,
+        filename="almudeer.apk",
+        media_type="application/vnd.android.package-archive",
+        headers={
+            "Content-Disposition": "attachment; filename=almudeer.apk"
+        }
+    )
+

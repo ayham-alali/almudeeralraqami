@@ -373,20 +373,9 @@ from health_check import router as health_router
 app.include_router(health_router)
 
 # Version check endpoint (public, for force-update system)
+# Also includes /download/almudeer.apk endpoint for APK downloads
 from routes.version import router as version_router
 app.include_router(version_router)
-
-# Static files for APK download (put almudeer.apk in static/download/ folder)
-# Access at: https://almudeer.up.railway.app/download/almudeer.apk
-from fastapi.staticfiles import StaticFiles
-import os
-download_dir = os.path.join(os.path.dirname(__file__), "static", "download")
-if os.path.exists(download_dir):
-    app.mount("/download", StaticFiles(directory=download_dir), name="download")
-else:
-    # Create directory if it doesn't exist
-    os.makedirs(download_dir, exist_ok=True)
-    app.mount("/download", StaticFiles(directory=download_dir), name="download")
 
 @app.get("/debug/routes")
 async def list_all_routes(x_admin_key: str = Header(None, alias="X-Admin-Key")):
