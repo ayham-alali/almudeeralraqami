@@ -1449,8 +1449,10 @@ async def get_conversation_detail(
     """
     Get complete chat history for a conversation (both incoming and outgoing messages).
     Returns messages in chronological order with direction markers.
+    Also returns customer lead_score if found.
     """
     from models import get_full_chat_history
+    from models.customers import get_customer_for_message
     
     messages = await get_full_chat_history(
         license_id=license["license_id"],
@@ -1465,11 +1467,88 @@ async def get_conversation_detail(
     incoming_msgs = [m for m in messages if m.get("direction") == "incoming"]
     sender_name = incoming_msgs[0].get("sender_name", "عميل") if incoming_msgs else "عميل"
     
+    # Try to get lead score from customer linked to any message
+    lead_score = None
+    if incoming_msgs:
+        customer = await get_customer_for_message(
+            license["license_id"],
+            incoming_msgs[0].get("id")
+        )
+        if customer:
+            lead_score = customer.get("lead_score")
+    
     return {
         "sender_name": sender_name,
         "sender_contact": sender_contact,
         "messages": messages,
-        "total": len(messages)
+        "total": len(messages),
+        "lead_score": lead_score
+    }
+
+
+@router.post("/conversations/{sender_contact:path}/send")
+async def send_conversation_message(
+    sender_contact: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Send a new message to a conversation.
+    Body: { "message": "text", "attachments": [] }
+    """
+    from models import get_full_chat_history
+    from models.inbox import create_outbox_message, approve_outbox_message
+    
+    try:
+        data = await request.json()
+    except:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    
+    message_text = data.get("message", "").strip()
+    attachments = data.get("attachments", [])
+    
+    if not message_text and not attachments:
+        raise HTTPException(status_code=400, detail="الرجاء إدخال رسالة أو مرفق")
+    
+    # Get latest message to determine channel and recipient info
+    messages = await get_full_chat_history(
+        license_id=license["license_id"],
+        sender_contact=sender_contact,
+        limit=1
+    )
+    
+    if not messages:
+        raise HTTPException(status_code=404, detail="المحادثة غير موجودة")
+    
+    latest_msg = messages[0]
+    channel = latest_msg.get("channel", "whatsapp")
+    sender_id = latest_msg.get("sender_id")
+    
+    # Create outbox message (using 0 for inbox_message_id since this is a new message)
+    outbox_id = await create_outbox_message(
+        inbox_message_id=0,  # No linked inbox message
+        license_id=license["license_id"],
+        channel=channel,
+        body=message_text,
+        recipient_id=sender_id,
+        recipient_email=sender_contact
+    )
+    
+    # Approve and send immediately
+    await approve_outbox_message(outbox_id, message_text)
+    
+    # Send in background
+    background_tasks.add_task(
+        send_approved_message,
+        outbox_id,
+        license["license_id"]
+    )
+    
+    return {
+        "success": True,
+        "message": "تم إرسال الرسالة",
+        "outbox_id": outbox_id
     }
 
 
