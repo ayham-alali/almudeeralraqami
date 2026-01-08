@@ -77,6 +77,11 @@ def filter_spam(message: Dict) -> tuple[bool, Optional[str]]:
 def filter_empty(message: Dict) -> tuple[bool, Optional[str]]:
     """Filter empty or very short messages"""
     body = message.get("body", "").strip()
+    attachments = message.get("attachments", [])
+    
+    # Allow messages with attachments even if body is empty/short (e.g., image-only)
+    if attachments and len(attachments) > 0:
+        return True, None
     
     if len(body) < 3:
         return False, "Message too short"

@@ -1736,6 +1736,38 @@ async def analyze_inbox_message(
                 except Exception as ex:
                     print(f"Failed to fetch history: {ex}")
 
+        # ============ MEDIA-TYPE SPECIFIC HANDLING ============
+        # Detect media-only messages (no text body)
+        is_image_only = False
+        
+        if attachments and (not body or len(body.strip()) < 3):
+            has_image = any(
+                att.get("type", "").startswith("image") 
+                for att in attachments
+            )
+            has_audio = any(
+                att.get("type", "").startswith(("audio", "voice")) 
+                for att in attachments
+            )
+            
+            # Image-only (no audio): skip AI, just save to inbox
+            if has_image and not has_audio:
+                is_image_only = True
+        
+        if is_image_only:
+            print(f"Image-only message {message_id}: saving to inbox without AI analysis")
+            await update_inbox_analysis(
+                message_id=message_id,
+                intent="media",
+                urgency="low",
+                sentiment="neutral",
+                language=None,
+                dialect=None,
+                summary="📷 صورة بدون نص",
+                draft_response=""  # Empty = no suggested response, but analyzed status
+            )
+            return
+
         # Process with AI
         result = await process_message(
             message=body,

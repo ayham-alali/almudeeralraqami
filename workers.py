@@ -506,7 +506,8 @@ class MessagePoller:
                         "sender_contact": email_data.get("sender"),
                         "sender_name": email_data.get("sender_name"),
                         "subject": email_data.get("subject"),
-                        "channel": "email"
+                        "channel": "email",
+                        "attachments": email_data.get("attachments", []),
                     }
                     should_process, reason = await apply_filters(filter_msg, license_id, [])
                     if not should_process:
@@ -568,7 +569,8 @@ class MessagePoller:
                     "sender_contact": email_data.get("sender_contact"),
                     "sender_name": email_data.get("sender_name"),
                     "subject": email_data.get("subject"),
-                    "channel": "email"
+                    "channel": "email",
+                    "attachments": email_data.get("attachments", []),
                 }
                 
                 should_process, filter_reason = await apply_filters(
@@ -730,6 +732,7 @@ class MessagePoller:
                         "sender_contact": msg.get("sender_contact"),
                         "sender_name": msg.get("sender_name"),
                         "subject": msg.get("subject"),
+                        "attachments": msg.get("attachments", []),
                     }
                     should_process, reason = await apply_filters(filter_msg, license_id, [])
                     if not should_process:
@@ -778,6 +781,7 @@ class MessagePoller:
                     "sender_name": msg.get("sender_name"),
                     "subject": msg.get("subject"),
                     "channel": "telegram",
+                    "attachments": msg.get("attachments", []),
                 }
 
                 should_process, filter_reason = await apply_filters(
@@ -991,6 +995,39 @@ class MessagePoller:
                 # Message will be processed later when limits reset
                 # For now, we skip AI processing - the message is saved but not analyzed
                 return
+            
+            # ============ MEDIA-TYPE SPECIFIC HANDLING ============
+            # Detect media-only messages (no text body)
+            is_image_only = False
+            
+            if attachments and (not body or len(body.strip()) < 3):
+                has_image = any(
+                    att.get("type", "").startswith("image") 
+                    for att in attachments
+                )
+                has_audio = any(
+                    att.get("type", "").startswith(("audio", "voice")) 
+                    for att in attachments
+                )
+                
+                # Image-only (no audio): skip AI, just save to inbox
+                if has_image and not has_audio:
+                    is_image_only = True
+            
+            if is_image_only:
+                logger.info(f"Image-only message {message_id}: saving to inbox without AI analysis")
+                await update_inbox_analysis(
+                    message_id=message_id,
+                    intent="media",
+                    urgency="low",
+                    sentiment="neutral",
+                    language=None,
+                    dialect=None,
+                    summary="📷 صورة بدون نص",
+                    draft_response=""  # Empty = no suggested response, but analyzed status
+                )
+                return
+            
             # Fetch conversation history for context-aware AI responses
             conversation_history = ""
             if recipient:  # recipient contains sender_contact
