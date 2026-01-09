@@ -73,7 +73,7 @@ async def update_delivery_status(
             # Find the outbox message by platform_message_id
             row = await fetch_one(
                 db,
-                "SELECT id, delivery_status FROM outbox_messages WHERE platform_message_id = ?",
+                "SELECT id, inbox_message_id, delivery_status FROM outbox_messages WHERE platform_message_id = ?",
                 [platform_message_id]
             )
             
@@ -82,6 +82,7 @@ async def update_delivery_status(
                 return False
             
             outbox_id = row["id"]
+            inbox_message_id = row.get("inbox_message_id")
             current_status = row.get("delivery_status", "")
             
             # Status progression: sent -> delivered -> read
@@ -145,6 +146,7 @@ async def update_delivery_status(
                             "event": "delivery_status",
                             "data": {
                                 "outbox_id": outbox_id,
+                                "inbox_message_id": inbox_message_id,
                                 "platform_message_id": platform_message_id,
                                 "status": status,
                                 "timestamp": ts_value if isinstance(ts_value, str) else ts_value.isoformat()

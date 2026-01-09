@@ -759,3 +759,94 @@ class TelegramPhoneService:
                     await client.disconnect()
                 except:
                     pass
+
+    async def get_messages_read_status(
+        self,
+        session_string: str,
+        channel_message_ids: List[str]
+    ) -> Dict[str, str]:
+        """
+        Get read status for specific messages
+        
+        Args:
+            session_string: Session string
+            channel_message_ids: List of Telegram message IDs to check
+        
+        Returns:
+            Dict[message_id, status] where status is 'read' or 'delivered' or 'sent'
+        """
+        from logging_config import get_logger
+        logger = get_logger(__name__)
+        
+        client = None
+        statuses = {}
+        
+        try:
+            # Parse IDs to integers
+            msg_ids = []
+            for mid in channel_message_ids:
+                try:
+                    msg_ids.append(int(mid))
+                except (ValueError, TypeError):
+                    continue
+            
+            if not msg_ids:
+                return {}
+
+            client = await self.create_client_from_session(session_string)
+            
+            # Use get_dialogs to find the read_outbox_max_id for relevant chats
+            # Optimization: First get messages to find their chats
+            messages = await client.get_messages(ids=msg_ids)
+            
+            # Map valid messages to their chats
+            chat_map: Dict[int, List[int]] = {}
+            valid_messages = []
+            
+            for msg in messages:
+                if not msg:
+                    continue
+                valid_messages.append(msg)
+                if msg.chat_id not in chat_map:
+                    chat_map[msg.chat_id] = []
+                chat_map[msg.chat_id].append(msg.id)
+            
+            if not valid_messages:
+                return {}
+                
+            # Fetch dialogs for these chats
+            # We can't easily fetch specific dialogs by ID efficiently in one call without iterating?
+            # client.get_dialogs() fetches recent ones.
+            # If the chat is recent (likely), it will be in the top list.
+            # If not, we might miss it, but that's acceptable for now (status updates are usually for recent msgs)
+            dialogs = await client.get_dialogs(limit=100)
+            
+            read_max_ids = {} # chat_id -> max_id
+            for d in dialogs:
+                read_max_ids[d.id] = d.read_outbox_max_id
+                
+            for msg in valid_messages:
+                chat_id = msg.chat_id
+                # Determine status
+                # If message ID <= read_outbox_max_id, it is read.
+                max_id = read_max_ids.get(chat_id, 0)
+                
+                # If we didn't find the dialog, we assume current state (sent) or unknown
+                # But if we found the dialog, check ID
+                if max_id > 0 and msg.id <= max_id:
+                    statuses[str(msg.id)] = "read"
+                else:
+                    # Default
+                    statuses[str(msg.id)] = "sent"
+                    
+            return statuses
+            
+        except Exception as e:
+            logger.error(f"Failed to check read status: {e}")
+            return {}
+        finally:
+            if client:
+                try:
+                    await client.disconnect()
+                except:
+                    pass

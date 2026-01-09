@@ -350,36 +350,61 @@ class GmailAPIService:
         return ""
     
     def _extract_body(self, payload: Dict) -> str:
-        """Extract body text from Gmail message payload"""
-        body = ""
+        """Extract body text from Gmail message payload (handles nested multipart)"""
         
-        # Check if message has parts
-        parts = payload.get("parts", [])
-        if parts:
-            # Look for plain text part
-            for part in parts:
-                mime_type = part.get("mimeType", "")
-                if mime_type == "text/plain":
-                    data = part.get("body", {}).get("data")
-                    if data:
-                        body = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
-                        break
-                elif mime_type == "text/html" and not body:
-                    data = part.get("body", {}).get("data")
-                    if data:
-                        html = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
-                        # Simple HTML stripping
-                        import re
-                        body = re.sub(r'<[^>]+>', '', html)
-        else:
-            # Single part message
-            mime_type = payload.get("mimeType", "")
-            if mime_type == "text/plain":
-                data = payload.get("body", {}).get("data")
+        def find_body_recursive(part: Dict) -> tuple[str, str]:
+            """
+            Recursively search for text content in email parts.
+            Returns (plain_text, html_text) tuple.
+            """
+            plain_text = ""
+            html_text = ""
+            
+            mime_type = part.get("mimeType", "")
+            
+            # If this part has nested parts, recurse into them
+            if part.get("parts"):
+                for sub_part in part["parts"]:
+                    sub_plain, sub_html = find_body_recursive(sub_part)
+                    if sub_plain and not plain_text:
+                        plain_text = sub_plain
+                    if sub_html and not html_text:
+                        html_text = sub_html
+            
+            # Extract content from this part if it's a text type
+            elif mime_type == "text/plain":
+                data = part.get("body", {}).get("data")
                 if data:
-                    body = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+                    try:
+                        plain_text = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+                    except Exception:
+                        pass
+                        
+            elif mime_type == "text/html":
+                data = part.get("body", {}).get("data")
+                if data:
+                    try:
+                        html_text = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+                    except Exception:
+                        pass
+            
+            return plain_text, html_text
         
-        return body.strip()
+        # Start recursive search from payload
+        plain_text, html_text = find_body_recursive(payload)
+        
+        # Prefer plain text, fall back to HTML with tags stripped
+        if plain_text.strip():
+            return plain_text.strip()
+        elif html_text:
+            import re
+            # Strip HTML tags
+            text = re.sub(r'<[^>]+>', '', html_text)
+            # Clean up excessive whitespace
+            text = re.sub(r'\s+', ' ', text)
+            return text.strip()
+        
+        return ""
 
     def _extract_attachments_meta(self, payload: Dict) -> List[Dict]:
         """Extract attachment metadata from payload"""

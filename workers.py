@@ -226,10 +226,14 @@ class MessagePoller:
                     t2.add_done_callback(self.background_tasks.discard)
                     # WhatsApp uses webhooks, so no polling needed
                     
-                    # Retry pending messages (those with placeholder responses from failed AI)
-                    # CRITICAL: Await this call to ensure strict sequential processing
-                    # This prevents multiple licenses from queuing up requests simultaneously
                     await self._retry_pending_messages(license_id)
+                    
+                    # Poll Telegram delivery statuses (read receipts)
+                    # We run this less frequently or just part of the loop
+                    # Using create_task to run concurrently
+                    t3 = asyncio.create_task(self._poll_telegram_outbox_status(license_id))
+                    self.background_tasks.add(t3)
+                    t3.add_done_callback(self.background_tasks.discard)
                 
                 # Wait 300 seconds (5 minutes) before next poll - optimized for Gemini free tier
                 # This ensures we stay well within 15 RPM limit even with 10 users
@@ -1534,6 +1538,59 @@ class MessagePoller:
         except Exception as e:
             logger.error(f"Error sending message {outbox_id}: {e}", exc_info=True)
     
+    async def _poll_telegram_outbox_status(self, license_id: int):
+        """Poll Telegram Phone outbox messages for read receipts"""
+        try:
+            # Get Telegram phone session string
+            session_string = await get_telegram_phone_session_data(license_id)
+            if not session_string:
+                return
+
+            # Find outbox messages that are 'sent' or 'delivered' (not 'read' or 'failed')
+            # and imply 'telegram' channel
+            async with get_db() as db:
+                rows = await fetch_all(
+                    db,
+                    """
+                    SELECT id, platform_message_id, delivery_status, created_at
+                    FROM outbox_messages
+                    WHERE license_key_id = ? 
+                      AND channel = 'telegram'
+                      AND delivery_status IN ('sent', 'delivered')
+                      AND platform_message_id IS NOT NULL
+                      AND created_at > datetime('now', '-24 hours')
+                    """,
+                    [license_id]
+                )
+            
+            if not rows:
+                return
+
+            platform_ids = [row["platform_message_id"] for row in rows]
+            phone_service = TelegramPhoneService()
+            
+            # Identify status
+            statuses = await phone_service.get_messages_read_status(
+                session_string=session_string,
+                channel_message_ids=platform_ids
+            )
+            
+            # Update statuses
+            from services.delivery_status import update_delivery_status
+            
+            count = 0
+            for platform_id, status in statuses.items():
+                if status == "read":
+                    updated = await update_delivery_status(platform_id, "read")
+                    if updated:
+                        count += 1
+            
+            if count > 0:
+                logger.info(f"Updated {count} Telegram messages to READ for license {license_id}")
+
+        except Exception as e:
+            logger.error(f"Error polling Telegram outbox status: {e}")
+
     async def _update_email_last_checked(self, license_id: int):
         """Update last_checked_at timestamp for email config"""
         try:
