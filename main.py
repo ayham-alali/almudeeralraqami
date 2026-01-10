@@ -88,6 +88,7 @@ from services.websocket_manager import get_websocket_manager, broadcast_new_mess
 from services.pagination import paginate_inbox, paginate_crm, paginate_customers, PaginationParams
 from services.request_batcher import get_request_batcher, batch_analyze
 from services.db_indexes import create_indexes
+from services.telegram_listener_service import get_telegram_listener
 
 
 # ============ App Lifecycle ============
@@ -246,6 +247,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Task queue initialization warning: {e}")
         
+        # Start Telegram Listener Service (Persistent)
+        try:
+            telegram_listener = get_telegram_listener()
+            await telegram_listener.start()
+            logger.info("Telegram Persistent Listener started")
+        except Exception as e:
+            logger.warning(f"Failed to start Telegram Listener: {e}")
+        
         logger.info("Al-Mudeer backend initialized successfully")
         print("Al-Mudeer Premium Backend Ready!")
         print("Customers & Analytics - All Ready!")
@@ -271,6 +280,12 @@ async def lifespan(app: FastAPI):
         logger.info("Task queue worker stopped")
     except Exception as e:
         logger.warning(f"Error stopping task queue: {e}")
+    try:
+        telegram_listener = get_telegram_listener()
+        await telegram_listener.stop()
+        logger.info("Telegram Persistent Listener stopped")
+    except Exception as e:
+        logger.warning(f"Error stopping Telegram Listener: {e}")
     try:
         await db_pool.close()
         logger.info("Database pool closed")

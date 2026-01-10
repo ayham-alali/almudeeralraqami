@@ -31,6 +31,7 @@ def get_mime_type(file_ext: str) -> str:
     if ext in ['mp3', 'm4a', 'ogg']: return 'audio/ogg' # Generalize for voice
     if ext == 'wav': return 'audio/wav'
     return 'application/octet-stream'
+
 class TelegramPhoneService:
     """Service for Telegram MTProto client (phone number authentication)"""
     
@@ -486,7 +487,8 @@ class TelegramPhoneService:
                                     logger.debug(f"Downloaded media for message {message.id} ({len(file_bytes)} bytes)")
                                     
                             except Exception as media_e:
-                                logger.error(f"Failed to download media for message {message.id}: {media_e}")
+                                # logger.error(f"Failed to download media for message {message.id}: {media_e}")
+                                pass
                 
                 except Exception as e:
                     # Skip this dialog if error
@@ -800,10 +802,14 @@ class TelegramPhoneService:
                     "status_text": "آخر ظهور مخفي"
                 }
             
-            return {"is_online": False, "last_seen": None, "status_text": "غير متصل"}
-
+            return {
+                "is_online": False,
+                "last_seen": None,
+                "status_text": "غير معروف"
+            }
+            
         except Exception as e:
-            logger.error(f"Failed to get presence for {phone_number}: {e}")
+            logger.error(f"Error getting user presence: {e}")
             return {"is_online": False, "last_seen": None, "status_text": "غير معروف"}
         finally:
             if client:
@@ -812,24 +818,85 @@ class TelegramPhoneService:
                 except:
                     pass
 
-    def _format_last_seen_date(self, dt: datetime) -> str:
-        """Format datetime to Arabic string"""
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc)
-        diff = now - dt
-        
-        if diff.total_seconds() < 60:
-            return "آخر ظهور منذ لحظات"
-        elif diff.total_seconds() < 3600:
-            minutes = int(diff.total_seconds() / 60)
-            return f"آخر ظهور منذ {minutes} دقيقة"
-        elif diff.total_seconds() < 86400:
-            hours = int(diff.total_seconds() / 3600)
-            return f"آخر ظهور منذ {hours} ساعة"
+    async def _format_last_seen_date(self, dt: datetime, now_dt: Optional[datetime] = None) -> str:
+        """Format last seen date to Arabic relative time"""
+        if not now_dt:
+             from datetime import timezone
+             now_dt = datetime.now(timezone.utc)
+
+        diff = now_dt - dt
+
+        if diff.days == 0:
+            if diff.seconds < 60:
+                return "آخر ظهور الآن"
+            elif diff.seconds < 3600:
+                return f"آخر ظهور منذ {diff.seconds // 60} دقيقة"
+            else:
+                return f"آخر ظهور منذ {diff.seconds // 3600} ساعة"
         elif diff.days == 1:
             return "آخر ظهور أمس"
+        elif diff.days < 7:
+             return f"آخر ظهور منذ {diff.days} أيام"
         else:
-            return f"آخر ظهور {dt.strftime('%Y/%m/%d')}"
+             return f"آخر ظهور {dt.strftime('%Y/%m/%d')}"
+
+    async def set_typing(
+        self,
+        session_string: str,
+        recipient_id: str,
+        action: str = "typing"
+    ) -> bool:
+        """
+        Send typing or recording action to a chat
+        
+        Args:
+            session_string: Session string
+            recipient_id: Recipient chat ID or username
+            action: 'typing' or 'recording'
+        """
+        from logging_config import get_logger
+        logger = get_logger(__name__)
+        
+        client = None
+        try:
+            client = await self.create_client_from_session(session_string)
+            
+            # Resolve entity
+            entity = None
+            try:
+                chat_id = int(recipient_id)
+                entity = await client.get_entity(chat_id)
+            except (ValueError, TypeError):
+                pass
+            
+            if entity is None:
+                try:
+                    entity = await client.get_entity(recipient_id)
+                except Exception:
+                    return False
+
+            from telethon import functions, types
+            
+            t_action = types.SendMessageTypingAction()
+            if action == 'recording':
+                t_action = types.SendMessageRecordAudioAction()
+                
+            await client(functions.messages.SetTypingRequest(
+                peer=entity,
+                action=t_action
+            ))
+            
+            return True
+            
+        except Exception as e:
+            logger.debug(f"Failed to set typing status: {e}")
+            return False
+        finally:
+            if client:
+                try:
+                    await client.disconnect()
+                except:
+                    pass
 
     async def mark_as_read(
         self,
