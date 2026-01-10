@@ -1466,6 +1466,16 @@ class MessagePoller:
                         if result["success"]:
                             sent_anything = True
                             logger.info(f"Sent WhatsApp reply for outbox {outbox_id}")
+                            
+                            # Save platform message ID for delivery receipt tracking
+                            wa_message_id = result.get("message_id")
+                            if wa_message_id:
+                                try:
+                                    from services.delivery_status import save_platform_message_id
+                                    await save_platform_message_id(outbox_id, wa_message_id)
+                                except Exception as e:
+                                    logger.warning(f"Failed to save WA message ID: {e}")
+
 
             # SEND AUDIO PART (All Channels)
             if audio_path:
