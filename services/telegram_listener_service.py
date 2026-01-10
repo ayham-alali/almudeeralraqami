@@ -17,6 +17,8 @@ from db_helper import fetch_all, get_db
 TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID")
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
 
+from models.base import simple_decrypt
+
 logger = get_logger(__name__)
 
 class TelegramListenerService:
@@ -80,12 +82,9 @@ class TelegramListenerService:
         """Sync active DB sessions with running clients"""
         # Fetch all active sessions
         async with get_db() as db:
-            # Adjust query based on your schema structure
-            # Assuming telegram_phone_sessions table links license to session
             try:
-                # Handle both Postgres and SQLite syntax if needed, or stick to one if standardized
                 query = """
-                    SELECT license_key_id, session_string, phone_number 
+                    SELECT license_key_id, session_data_encrypted, phone_number 
                     FROM telegram_phone_sessions 
                     WHERE is_active = 1 OR is_active = TRUE
                 """
@@ -98,9 +97,15 @@ class TelegramListenerService:
         
         for row in rows:
             license_id = row.get("license_key_id") or row[0]
-            session_string = row.get("session_string") or row[1]
+            encrypted_data = row.get("session_data_encrypted") or row[1]
             phone_number = row.get("phone_number") or row[2]
             
+            try:
+                session_string = simple_decrypt(encrypted_data)
+            except Exception as e:
+                logger.error(f"Failed to decrypt session for license {license_id}: {e}")
+                continue
+
             active_license_ids.add(license_id)
             
             # If not running, start client
