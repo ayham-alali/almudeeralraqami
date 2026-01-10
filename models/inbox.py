@@ -464,7 +464,7 @@ async def get_inbox_conversations(
                 lps.message_count, lps.unread_count,
                 cp.is_online, cp.last_seen
             FROM latest_per_sender lps
-            LEFT JOIN customer_presence cp ON cp.license_key_id = lps.license_key_id AND cp.sender_contact = lps.sender_contact
+            LEFT JOIN customer_presence cp ON cp.license_id = lps.license_key_id AND cp.sender_contact = lps.sender_contact
             WHERE {final_where}
             ORDER BY lps.created_at DESC
             LIMIT ? OFFSET ?
@@ -495,7 +495,7 @@ async def get_inbox_conversations(
                  cp.is_online,
                  cp.last_seen
             FROM inbox_messages m
-            LEFT JOIN customer_presence cp ON cp.license_key_id = m.license_key_id AND cp.sender_contact = m.sender_contact
+            LEFT JOIN customer_presence cp ON cp.license_id = m.license_key_id AND cp.sender_contact = m.sender_contact
             WHERE {base_where}
             AND m.id = (
                 SELECT m3.id FROM inbox_messages m3

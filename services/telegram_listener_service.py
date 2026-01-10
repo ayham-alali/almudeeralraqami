@@ -86,7 +86,7 @@ class TelegramListenerService:
                 query = """
                     SELECT license_key_id, session_data_encrypted, phone_number 
                     FROM telegram_phone_sessions 
-                    WHERE is_active = 1 OR is_active = TRUE
+                    WHERE is_active = TRUE
                 """
                 rows = await fetch_all(db, query)
             except Exception as e:
