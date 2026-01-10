@@ -451,7 +451,7 @@ async def get_inbox_conversations(
                       WHERE m2.license_key_id = inbox_messages.license_key_id 
                       AND COALESCE(m2.sender_contact, m2.sender_id::text, 'unknown') = COALESCE(inbox_messages.sender_contact, inbox_messages.sender_id::text, 'unknown')
                       AND m2.status = 'analyzed'
-                      AND m2.is_read = FALSE
+                      AND (m2.is_read = FALSE OR m2.is_read IS NULL)
                      ) as unread_count
                 FROM inbox_messages
                 WHERE {base_where}
@@ -488,7 +488,7 @@ async def get_inbox_conversations(
                   WHERE m2.license_key_id = m.license_key_id 
                   AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
                   AND m2.status = 'analyzed'
-                  AND (m2.is_read = 0 OR m2.is_read IS FALSE)
+                  AND (m2.is_read = 0 OR m2.is_read IS NULL OR m2.is_read IS FALSE)
                  ) as unread_count
             FROM inbox_messages m
             WHERE {base_where}
