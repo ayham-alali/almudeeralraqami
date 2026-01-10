@@ -30,12 +30,10 @@ async def send_typing_indicator(
     """
     license_id = license.get("license_id")
     
-    # Broadcast to other internal UIs
-    await broadcast_typing_indicator(
-        license_id=license_id,
-        sender_contact=data.sender_contact,
-        is_typing=data.is_active
-    )
+    # NOTE: We do NOT broadcast to internal WebSocket here.
+    # This endpoint is for OUTGOING indicators (Agent -> External Platform).
+    # The app already knows the agent is typing; no need to echo it back.
+    # Internal WebSocket broadcasts are only for INCOMING indicators from TelegramListenerService.
     
     # Send to external platform
     try:
@@ -82,12 +80,7 @@ async def send_recording_indicator(
     """
     license_id = license.get("license_id")
     
-    # Broadcast to other internal UIs
-    await broadcast_recording_indicator(
-        license_id=license_id,
-        sender_contact=data.sender_contact,
-        is_recording=data.is_active
-    )
+    # NOTE: No internal broadcast - see /typing endpoint comment.
     
     # Send to external platform
     try:
