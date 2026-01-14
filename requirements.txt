@@ -4,6 +4,7 @@
 
 # Web Framework
 fastapi>=0.115.0
+pytz>=2023.3
 # uvicorn[standard]>=0.30.0
 uvicorn>=0.30.0
 httptools==0.6.1
