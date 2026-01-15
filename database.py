@@ -163,6 +163,29 @@ async def _init_sqlite_tables(db):
             license_key TEXT
         )
     """)
+
+    # App Config table (Source of Truth for Versioning)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS app_config (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Version History table
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS version_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version TEXT NOT NULL,
+            build_number INTEGER NOT NULL,
+            release_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            changelog_ar TEXT,
+            changelog_en TEXT,
+            changes_json TEXT
+        )
+    """)
+
     
     # Create indexes for performance
     await db.execute("""
@@ -256,6 +279,29 @@ async def _init_postgresql_tables(conn):
             license_key VARCHAR(255)
         )
     """))
+
+    # App Config table (Source of Truth for Versioning)
+    await conn.execute(_adapt_sql_for_db("""
+        CREATE TABLE IF NOT EXISTS app_config (
+            key VARCHAR(255) PRIMARY KEY,
+            value TEXT,
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """))
+
+    # Version History table
+    await conn.execute(_adapt_sql_for_db("""
+        CREATE TABLE IF NOT EXISTS version_history (
+            id SERIAL PRIMARY KEY,
+            version VARCHAR(50) NOT NULL,
+            build_number INTEGER NOT NULL,
+            release_date TIMESTAMP DEFAULT NOW(),
+            changelog_ar TEXT,
+            changelog_en TEXT,
+            changes_json TEXT
+        )
+    """))
+
     
     # Create indexes for performance
     await conn.execute("""
@@ -748,3 +794,98 @@ async def get_update_events(limit: int = 100) -> list:
             """, (limit,)) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(row) for row in rows]
+
+
+# ============ App Config & Versioning ============
+
+async def get_app_config(key: str) -> Optional[str]:
+    """Get a configuration value by key"""
+    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            return await conn.fetchval("SELECT value FROM app_config WHERE key = $1", key)
+        finally:
+            await conn.close()
+    else:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            async with db.execute("SELECT value FROM app_config WHERE key = ?", (key,)) as cursor:
+                row = await cursor.fetchone()
+                return row[0] if row else None
+
+
+async def set_app_config(key: str, value: str):
+    """Set a configuration value"""
+    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            await conn.execute("""
+                INSERT INTO app_config (key, value, updated_at) 
+                VALUES ($1, $2, NOW())
+                ON CONFLICT (key) DO UPDATE 
+                SET value = EXCLUDED.value, updated_at = NOW()
+            """, key, value)
+        finally:
+            await conn.close()
+    else:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            await db.execute("""
+                INSERT INTO app_config (key, value, updated_at) 
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE 
+                SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            """, (key, value))
+            await db.commit()
+
+
+async def add_version_history(
+    version: str,
+    build_number: int,
+    changelog_ar: str,
+    changelog_en: str,
+    changes_json: str
+):
+    """Add a new version to history"""
+    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            await conn.execute("""
+                INSERT INTO version_history 
+                (version, build_number, changelog_ar, changelog_en, changes_json)
+                VALUES ($1, $2, $3, $4, $5)
+            """, version, build_number, changelog_ar, changelog_en, changes_json)
+        finally:
+            await conn.close()
+    else:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            await db.execute("""
+                INSERT INTO version_history 
+                (version, build_number, changelog_ar, changelog_en, changes_json)
+                VALUES (?, ?, ?, ?, ?)
+            """, (version, build_number, changelog_ar, changelog_en, changes_json))
+            await db.commit()
+
+
+async def get_version_history_list(limit: int = 10) -> list:
+    """Get recent version history"""
+    if DB_TYPE == "postgresql" and POSTGRES_AVAILABLE:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            rows = await conn.fetch("""
+                SELECT * FROM version_history 
+                ORDER BY build_number DESC 
+                LIMIT $1
+            """, limit)
+            return [dict(row) for row in rows]
+        finally:
+            await conn.close()
+    else:
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT * FROM version_history 
+                ORDER BY build_number DESC 
+                LIMIT ?
+            """, (limit,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+

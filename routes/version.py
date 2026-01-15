@@ -4,21 +4,16 @@ Public endpoint for version checking (force update system)
 
 RELIABLE FORCE UPDATE SYSTEM (Build Number Based):
 1. Mobile app has a build number in pubspec.yaml (e.g., version: 1.0.0+2)
-2. Backend reads minimum required build number from apk_version.txt
+2. Backend reads minimum required build number from DATABASE (app_config table)
 3. If app_build_number < min_build_number → force update
 
 SOFT UPDATE SUPPORT:
-- Set is_soft_update=true in update_config.json for optional updates
+- Set is_soft_update=true in update config for optional updates
 - Users can dismiss and update later
 
 To trigger update:
-1. Update pubspec.yaml: version: 1.0.0+2 (increment build number)
-2. Build APK
-3. Copy APK to backend/static/download/almudeer.apk
-4. Update backend/static/download/apk_version.txt to "2"
-5. Update backend/static/download/changelog.json with changes
-6. Push to Railway
-7. All users with older build see update popup
+1. Use the Admin API (or update_version.py script) to set new version info in DB
+2. Upload APK to backend/static/download/almudeer.apk (or CDN)
 """
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -32,16 +27,20 @@ import time
 import threading
 from datetime import datetime, timezone
 import pytz
-from database import save_update_event, get_update_events
+from database import (
+    save_update_event, 
+    get_update_events,
+    get_app_config,
+    set_app_config,
+    add_version_history,
+    get_version_history_list
+)
 
 router = APIRouter(tags=["Version"])
 
 # Paths
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static", "download")
-_APK_VERSION_FILE = os.path.join(_STATIC_DIR, "apk_version.txt")
 _APK_FILE = os.path.join(_STATIC_DIR, "almudeer.apk")
-_CHANGELOG_FILE = os.path.join(_STATIC_DIR, "changelog.json")
-_UPDATE_CONFIG_FILE = os.path.join(_STATIC_DIR, "update_config.json")
 
 # Version for display purposes only
 _APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
@@ -57,7 +56,7 @@ _APP_DOWNLOAD_URL = _APK_CDN_URL if _APK_CDN_URL else os.getenv(
 # Force update can be disabled in emergencies
 _FORCE_UPDATE_ENABLED = os.getenv("FORCE_UPDATE_ENABLED", "true").lower() == "true"
 
-# Admin key for manual operations
+# Admin key for manual operations (Should be improved to constant-time compare)
 _ADMIN_KEY = os.getenv("ADMIN_KEY", "")
 
 # Update priority levels
@@ -65,11 +64,6 @@ UPDATE_PRIORITY_CRITICAL = "critical"
 UPDATE_PRIORITY_HIGH = "high"
 UPDATE_PRIORITY_NORMAL = "normal"
 UPDATE_PRIORITY_LOW = "low"
-
-UPDATE_PRIORITY_LOW = "low"
-
-# Version history file
-_VERSION_HISTORY_FILE = os.path.join(_STATIC_DIR, "version_history.json")
 
 # Localization Strings
 _MESSAGES = {
@@ -151,54 +145,51 @@ class RateLimiter:
 
 # Global rate limiter instance
 _rate_limiter = RateLimiter(_RATE_LIMIT_REQUESTS, _RATE_LIMIT_WINDOW)
+import secrets
+
+def compare_secure(a: str, b: str) -> bool:
+    """Constant-time comparison for admin key to prevent timing attacks"""
+    if not a or not b:
+        return False
+    return secrets.compare_digest(a, b)
 
 
-def _get_min_build_number() -> int:
-    """
-    Read the minimum required build number from apk_version.txt.
-    Falls back to 1 if file doesn't exist or is invalid.
-    """
+async def _get_min_build_number() -> int:
+    """Read the minimum required build number from DB."""
     try:
-        if os.path.exists(_APK_VERSION_FILE):
-            with open(_APK_VERSION_FILE, "r") as f:
-                content = f.read().strip()
-                return int(content)
-    except (ValueError, IOError):
-        pass
-    return 1
+        val = await get_app_config("min_build_number")
+        return int(val) if val else 1
+    except (ValueError, TypeError):
+        return 1
 
 
-def _get_changelog() -> dict:
-    """
-    Read changelog from changelog.json.
-    Returns empty dict if file doesn't exist or is invalid.
-    """
+async def _get_changelog() -> dict:
+    """Read changelog from DB."""
     try:
-        if os.path.exists(_CHANGELOG_FILE):
-            with open(_CHANGELOG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except (json.JSONDecodeError, IOError):
+        val = await get_app_config("changelog_data")
+        if val:
+            return json.loads(val)
+    except (json.JSONDecodeError, TypeError):
         pass
+        
     return {
         "version": _APP_VERSION,
-        "build_number": _get_min_build_number(),
+        "build_number": await _get_min_build_number(),
         "changelog_ar": [],
         "changelog_en": [],
         "release_notes_url": ""
     }
 
 
-def _get_update_config() -> dict:
-    """
-    Read update configuration from update_config.json.
-    Returns default config if file doesn't exist.
-    """
+async def _get_update_config() -> dict:
+    """Read update configuration from DB."""
     try:
-        if os.path.exists(_UPDATE_CONFIG_FILE):
-            with open(_UPDATE_CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except (json.JSONDecodeError, IOError):
+        val = await get_app_config("update_config")
+        if val:
+            return json.loads(val)
+    except (json.JSONDecodeError, TypeError):
         pass
+        
     return {
         "is_soft_update": False,
         "priority": UPDATE_PRIORITY_NORMAL,
@@ -279,20 +270,6 @@ def _is_update_active(config: dict) -> tuple[bool, str]:
     return True, "Active"
 
 
-def _get_version_history() -> List[dict]:
-    """
-    Read version history from version_history.json.
-    Returns list of past versions with changelogs.
-    """
-    try:
-        if os.path.exists(_VERSION_HISTORY_FILE):
-            with open(_VERSION_HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        pass
-    return []
-
-
 def _get_apk_size_mb() -> Optional[float]:
     """
     Get APK file size in megabytes.
@@ -356,11 +333,11 @@ async def get_version():
     Public endpoint to check current version.
     No authentication required.
     """
-    changelog = _get_changelog()
+    changelog = await _get_changelog()
     return {
         "frontend": _APP_VERSION,
         "backend": _BACKEND_VERSION,
-        "min_build_number": _get_min_build_number(),
+        "min_build_number": await _get_min_build_number(),
         "changelog": changelog.get("changelog_ar", []),
     }
 
@@ -372,32 +349,7 @@ async def check_app_version(request: Request):
     Public endpoint for mobile app RELIABLE force update system.
     No authentication required.
     
-    Rate Limited: 60 requests per minute per IP (configurable via RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW)
-    
-    HOW IT WORKS:
-    - The app reads its build number from PackageInfo.buildNumber
-    - Backend returns the minimum required build number from apk_version.txt
-    - If app_build_number < min_build_number → force update (or soft update)
-    
-    This is 100% reliable because:
-    - Build numbers are deterministic (you set them in pubspec.yaml)
-    - No clock skew issues
-    - No timing issues
-    
-    SOFT UPDATE:
-    - If is_soft_update is true, the dialog can be dismissed
-    - min_soft_update_build: Only show soft update for builds >= this
-    
-    Returns:
-        - min_build_number: Apps with build number below this must update
-        - update_url: URL to download the new APK (CDN or Railway)
-        - force_update: Whether force update is enabled
-        - is_soft_update: If true, update is optional (dismissible dialog)
-        - priority: Update priority level (critical/high/normal/low)
-        - changelog: List of changes in Arabic
-        - changelog_en: List of changes in English
-        - release_notes_url: URL to full release notes
-        - message: Message to show users (Arabic)
+    Rate Limited: 60 requests per minute per IP
     """
     # Rate limiting by client IP
     client_ip = request.client.host if request.client else "unknown"
@@ -410,8 +362,8 @@ async def check_app_version(request: Request):
             headers={"Retry-After": str(_RATE_LIMIT_WINDOW)}
         )
     
-    changelog_data = _get_changelog()
-    update_config = _get_update_config()
+    changelog_data = await _get_changelog()
+    update_config = await _get_update_config()
     parsed_changelog = _parse_categorized_changelog(changelog_data)
     
     # Check if update is currently active
@@ -419,7 +371,7 @@ async def check_app_version(request: Request):
     
     return {
         # Core version info
-        "min_build_number": _get_min_build_number(),
+        "min_build_number": await _get_min_build_number(),
         "current_version": _APP_VERSION,
         "update_url": _APP_DOWNLOAD_URL,
         
@@ -471,29 +423,12 @@ async def set_min_build_number(
 ):
     """
     Manually set the minimum required build number and update configuration.
-    Call this AFTER uploading a new APK if you prefer API over file editing.
+    Uses DB persistence (Source of Truth).
     
     Requires: X-Admin-Key header
-    
-    Args:
-        build_number: Minimum required build number
-        is_soft_update: If true, update is optional (user can dismiss)
-        priority: Update priority (critical, high, normal, low)
-        ios_store_url: Optional App Store URL for iOS users
-    
-    Usage:
-    ```bash
-    # Force update
-    curl -X POST "https://almudeer.up.railway.app/api/app/set-min-build?build_number=2" \
-         -H "X-Admin-Key: YOUR_ADMIN_KEY"
-    
-    # Soft update with high priority
-    curl -X POST "https://almudeer.up.railway.app/api/app/set-min-build?build_number=3&is_soft_update=true&priority=high" \
-         -H "X-Admin-Key: YOUR_ADMIN_KEY"
-    ```
     """
     # Verify admin key
-    if not x_admin_key or x_admin_key != _ADMIN_KEY:
+    if not compare_secure(x_admin_key, _ADMIN_KEY):
         raise HTTPException(
             status_code=403,
             detail=_MESSAGES["ar"]["admin_required"]
@@ -512,24 +447,19 @@ async def set_min_build_number(
             detail=_MESSAGES["ar"]["invalid_priority"].format(priorities=', '.join(valid_priorities))
         )
     
-    # Write to apk_version.txt
+    # Write to DB
     try:
-        os.makedirs(_STATIC_DIR, exist_ok=True)
-        with open(_APK_VERSION_FILE, "w") as f:
-            f.write(str(build_number))
+        await set_app_config("min_build_number", str(build_number))
         
-        # Write update config
         update_config = {
-            "is_soft_update": is_soft_update,
             "is_soft_update": is_soft_update,
             "priority": priority,
             "min_soft_update_build": 0,
             "ios_store_url": ios_store_url
         }
-        with open(_UPDATE_CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(update_config, f, ensure_ascii=False, indent=2)
+        await set_app_config("update_config", json.dumps(update_config))
             
-    except IOError as e:
+    except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=_MESSAGES["ar"]["update_failed"].format(error=str(e))
@@ -556,42 +486,36 @@ async def set_changelog(
     Update the changelog for the current version.
     
     Requires: X-Admin-Key header
-    
-    Args:
-        changelog_ar: List of changes in Arabic
-        changelog_en: List of changes in English (optional)
-        release_notes_url: URL to full release notes (optional)
-    
-    Usage:
-    ```bash
-    curl -X POST "https://almudeer.up.railway.app/api/app/set-changelog" \
-         -H "X-Admin-Key: YOUR_ADMIN_KEY" \
-         -H "Content-Type: application/json" \
-         -d '{"changelog_ar": ["تحسين الأداء", "إصلاح الأخطاء"]}'
-    ```
     """
-    # Verify admin key
-    if not x_admin_key or x_admin_key != _ADMIN_KEY:
+    if not compare_secure(x_admin_key, _ADMIN_KEY):
         raise HTTPException(
             status_code=403,
             detail=_MESSAGES["ar"]["admin_required"]
         )
     
     try:
-        os.makedirs(_STATIC_DIR, exist_ok=True)
+        min_build = await _get_min_build_number()
         
         changelog_data = {
             "version": _APP_VERSION,
-            "build_number": _get_min_build_number(),
+            "build_number": min_build,
             "changelog_ar": changelog_ar,
             "changelog_en": changelog_en or [],
             "release_notes_url": release_notes_url or ""
         }
         
-        with open(_CHANGELOG_FILE, "w", encoding="utf-8") as f:
-            json.dump(changelog_data, f, ensure_ascii=False, indent=2)
+        await set_app_config("changelog_data", json.dumps(changelog_data))
+        
+        # Also add to history
+        await add_version_history(
+            version=_APP_VERSION,
+            build_number=min_build,
+            changelog_ar="\n".join(changelog_ar),
+            changelog_en="\n".join(changelog_en or []),
+            changes_json=json.dumps(changelog_data)
+        )
             
-    except IOError as e:
+    except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=_MESSAGES["ar"]["changelog_failed"].format(error=str(e))
@@ -613,19 +537,15 @@ async def disable_force_update(
     
     Requires: X-Admin-Key header
     """
-    # Verify admin key
-    if not x_admin_key or x_admin_key != _ADMIN_KEY:
+    if not compare_secure(x_admin_key, _ADMIN_KEY):
         raise HTTPException(
             status_code=403,
             detail=_MESSAGES["ar"]["admin_required"]
         )
     
-    # Reset to 0 (no one will be forced to update)
     try:
-        os.makedirs(_STATIC_DIR, exist_ok=True)
-        with open(_APK_VERSION_FILE, "w") as f:
-            f.write("0")
-    except IOError as e:
+        await set_app_config("min_build_number", "0")
+    except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=_MESSAGES["ar"]["disable_failed"].format(error=str(e))
@@ -656,18 +576,6 @@ async def track_update_event(data: UpdateEventRequest):
     """
     Track update-related events for analytics.
     No authentication required (public endpoint for app usage).
-    
-    Events:
-        - viewed: User saw the update dialog
-        - clicked_update: User clicked "Update Now"
-        - clicked_later: User clicked "Later" (soft update only)
-        - installed: User successfully installed the update
-    
-    This data helps track:
-        - Update adoption rate
-        - Time to update
-        - Soft update dismissal rate
-        - Platform-specific metrics (android vs ios)
     """
     valid_events = ["viewed", "clicked_update", "clicked_later", "installed"]
     if data.event not in valid_events:
@@ -681,8 +589,7 @@ async def track_update_event(data: UpdateEventRequest):
     if data.device_type and data.device_type not in valid_device_types:
         data.device_type = "unknown"
     
-    # Log analytics event
-    # Log analytics event
+    # Log analytics event to DB
     await save_update_event(
         event=data.event,
         from_build=data.from_build,
@@ -704,18 +611,8 @@ async def get_update_analytics(
     Get update analytics summary.
     
     Requires: X-Admin-Key header
-    
-    Returns:
-        - total_views: Total update dialog views
-        - total_updates: Total update clicks
-        - total_later: Total "Later" clicks
-        - adoption_rate: Percentage of views that led to updates
-        - by_device_type: Breakdown by platform (android, ios)
-        - recent_events: Last 50 events
     """
-    # Verify admin key
-    # Verify admin key
-    if not x_admin_key or x_admin_key != _ADMIN_KEY:
+    if not compare_secure(x_admin_key, _ADMIN_KEY):
         raise HTTPException(
             status_code=403,
             detail=_MESSAGES["ar"]["admin_required"]
@@ -755,7 +652,7 @@ async def get_update_analytics(
         "total_installed": total_installed,
         "adoption_rate": adoption_rate,
         "by_device_type": by_device_type,
-        "recent_events": events[:50],  # Return 50 most recent (already sorted DESC)
+        "recent_events": events[:50],
     }
 
 
@@ -766,9 +663,6 @@ async def download_apk():
     """
     Download the Al-Mudeer mobile app APK.
     Returns the APK file with proper headers for browser download.
-    
-    Note: If APK_CDN_URL is set, consider redirecting users there instead
-    for better download speeds and reduced server load.
     """
     if not os.path.exists(_APK_FILE):
         raise HTTPException(
@@ -794,28 +688,7 @@ async def get_version_history(
 ):
     """
     Get changelog history for multiple versions.
-    Useful for users who skipped updates and want to see all changes.
-    
-    Returns:
-        List of versions with their changelogs, newest first.
     """
-    # Get version history from file
-    history = _get_version_history()
-    
-    # Add current version at the top
-    current_changelog = _get_changelog()
-    current = {
-        "version": _APP_VERSION,
-        "build_number": _get_min_build_number(),
-        "release_date": current_changelog.get("release_date", None),
-        "changes": current_changelog.get("changes", []),
-        "changelog_ar": current_changelog.get("changelog_ar", []),
-        "changelog_en": current_changelog.get("changelog_en", []),
-    }
-    
-    all_versions = [current] + history
-    
     return {
-        "versions": all_versions[:limit],
-        "total": len(all_versions),
+        "versions": await get_version_history_list(limit)
     }
