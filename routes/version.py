@@ -21,14 +21,16 @@ To trigger update:
 7. All users with older build see update popup
 """
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import os
 import json
 import hashlib
+import time
+import threading
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Dict
 import pytz
 
 router = APIRouter(tags=["Version"])
@@ -68,6 +70,69 @@ _ANALYTICS_LOG_FILE = os.path.join(_STATIC_DIR, "update_analytics.jsonl")
 
 # Version history file
 _VERSION_HISTORY_FILE = os.path.join(_STATIC_DIR, "version_history.json")
+
+# Rate limiting configuration
+_RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "60"))  # requests per window
+_RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))  # window in seconds
+
+
+class RateLimiter:
+    """
+    Simple in-memory rate limiter using sliding window.
+    Thread-safe for concurrent requests.
+    """
+    
+    def __init__(self, max_requests: int, window_seconds: int):
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._requests: Dict[str, List[float]] = {}
+        self._lock = threading.Lock()
+    
+    def is_allowed(self, identifier: str) -> tuple[bool, int]:
+        """
+        Check if request is allowed for given identifier.
+        
+        Returns:
+            Tuple of (is_allowed, remaining_requests)
+        """
+        now = time.time()
+        window_start = now - self.window_seconds
+        
+        with self._lock:
+            # Get existing requests for this identifier
+            if identifier not in self._requests:
+                self._requests[identifier] = []
+            
+            # Remove expired requests
+            self._requests[identifier] = [
+                ts for ts in self._requests[identifier] if ts > window_start
+            ]
+            
+            # Check if under limit
+            current_count = len(self._requests[identifier])
+            remaining = self.max_requests - current_count
+            
+            if current_count >= self.max_requests:
+                return False, 0
+            
+            # Record this request
+            self._requests[identifier].append(now)
+            return True, remaining - 1
+    
+    def cleanup_old_entries(self):
+        """Remove entries older than the window. Call periodically."""
+        cutoff = time.time() - self.window_seconds
+        with self._lock:
+            for identifier in list(self._requests.keys()):
+                self._requests[identifier] = [
+                    ts for ts in self._requests[identifier] if ts > cutoff
+                ]
+                if not self._requests[identifier]:
+                    del self._requests[identifier]
+
+
+# Global rate limiter instance
+_rate_limiter = RateLimiter(_RATE_LIMIT_REQUESTS, _RATE_LIMIT_WINDOW)
 
 
 def _get_min_build_number() -> int:
@@ -283,10 +348,13 @@ async def get_version():
 
 
 @router.get("/api/app/version-check", summary="Mobile app version check (public)")
-async def check_app_version():
+@router.get("/api/v1/app/version-check", summary="Mobile app version check v1 (public)")
+async def check_app_version(request: Request):
     """
     Public endpoint for mobile app RELIABLE force update system.
     No authentication required.
+    
+    Rate Limited: 60 requests per minute per IP (configurable via RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW)
     
     HOW IT WORKS:
     - The app reads its build number from PackageInfo.buildNumber
@@ -313,6 +381,17 @@ async def check_app_version():
         - release_notes_url: URL to full release notes
         - message: Message to show users (Arabic)
     """
+    # Rate limiting by client IP
+    client_ip = request.client.host if request.client else "unknown"
+    is_allowed, remaining = _rate_limiter.is_allowed(client_ip)
+    
+    if not is_allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="تم تجاوز الحد المسموح من الطلبات. يرجى المحاولة بعد قليل.",
+            headers={"Retry-After": str(_RATE_LIMIT_WINDOW)}
+        )
+    
     changelog_data = _get_changelog()
     update_config = _get_update_config()
     parsed_changelog = _parse_categorized_changelog(changelog_data)
@@ -352,6 +431,9 @@ async def check_app_version():
         # APK info
         "apk_size_mb": _get_apk_size_mb(),
         "apk_sha256": _get_apk_sha256(),
+        
+        # Rate limit info
+        "rate_limit_remaining": remaining,
         
         # User message
         "message": "يتوفر إصدار جديد من التطبيق يحتوي على تحسينات وميزات جديدة. يرجى التحديث للمتابعة.",
@@ -538,10 +620,12 @@ class UpdateEventRequest(BaseModel):
     from_build: int
     to_build: int
     device_id: Optional[str] = None
+    device_type: Optional[str] = None  # android, ios, unknown
     license_key: Optional[str] = None
 
 
 @router.post("/api/app/update-event", summary="Track update event (analytics)")
+@router.post("/api/v1/app/update-event", summary="Track update event v1 (analytics)")
 async def track_update_event(data: UpdateEventRequest):
     """
     Track update-related events for analytics.
@@ -557,6 +641,7 @@ async def track_update_event(data: UpdateEventRequest):
         - Update adoption rate
         - Time to update
         - Soft update dismissal rate
+        - Platform-specific metrics (android vs ios)
     """
     valid_events = ["viewed", "clicked_update", "clicked_later", "installed"]
     if data.event not in valid_events:
@@ -564,6 +649,11 @@ async def track_update_event(data: UpdateEventRequest):
             status_code=400,
             detail=f"Invalid event. Must be one of: {', '.join(valid_events)}"
         )
+    
+    # Validate device_type if provided
+    valid_device_types = ["android", "ios", "unknown", None]
+    if data.device_type and data.device_type not in valid_device_types:
+        data.device_type = "unknown"
     
     # Log analytics event
     try:
@@ -574,6 +664,7 @@ async def track_update_event(data: UpdateEventRequest):
             "from_build": data.from_build,
             "to_build": data.to_build,
             "device_id": data.device_id,
+            "device_type": data.device_type,
             "license_key": data.license_key[:10] + "..." if data.license_key else None,
         }
         
@@ -587,6 +678,7 @@ async def track_update_event(data: UpdateEventRequest):
 
 
 @router.get("/api/app/update-analytics", summary="Get update analytics (admin only)")
+@router.get("/api/v1/app/update-analytics", summary="Get update analytics v1 (admin only)")
 async def get_update_analytics(
     x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")
 ):
@@ -600,6 +692,7 @@ async def get_update_analytics(
         - total_updates: Total update clicks
         - total_later: Total "Later" clicks
         - adoption_rate: Percentage of views that led to updates
+        - by_device_type: Breakdown by platform (android, ios)
         - recent_events: Last 50 events
     """
     # Verify admin key
@@ -629,12 +722,29 @@ async def get_update_analytics(
     
     adoption_rate = round((total_updates / total_views * 100), 1) if total_views > 0 else 0
     
+    # Device type breakdown
+    by_device_type = {
+        "android": {
+            "views": sum(1 for e in events if e.get("event") == "viewed" and e.get("device_type") == "android"),
+            "updates": sum(1 for e in events if e.get("event") == "clicked_update" and e.get("device_type") == "android"),
+            "later": sum(1 for e in events if e.get("event") == "clicked_later" and e.get("device_type") == "android"),
+            "installed": sum(1 for e in events if e.get("event") == "installed" and e.get("device_type") == "android"),
+        },
+        "ios": {
+            "views": sum(1 for e in events if e.get("event") == "viewed" and e.get("device_type") == "ios"),
+            "updates": sum(1 for e in events if e.get("event") == "clicked_update" and e.get("device_type") == "ios"),
+            "later": sum(1 for e in events if e.get("event") == "clicked_later" and e.get("device_type") == "ios"),
+            "installed": sum(1 for e in events if e.get("event") == "installed" and e.get("device_type") == "ios"),
+        },
+    }
+    
     return {
         "total_views": total_views,
         "total_updates": total_updates,
         "total_later": total_later,
         "total_installed": total_installed,
         "adoption_rate": adoption_rate,
+        "by_device_type": by_device_type,
         "recent_events": events[-50:] if events else [],
     }
 

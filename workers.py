@@ -348,7 +348,9 @@ class MessagePoller:
                         ORDER BY created_at DESC
                         LIMIT 1
                     """
+                logger.debug(f"License {license_id}: Querying pending messages with DB_TYPE={DB_TYPE}")
                 rows = await fetch_all(db, query, [license_id, placeholder])
+                logger.debug(f"License {license_id}: Query returned {len(rows) if rows else 0} rows")
                 
                 if not rows:
                     return
@@ -393,7 +395,7 @@ class MessagePoller:
                     logger.info(f"Retried AI analysis for message {message_id}")
                     
         except Exception as e:
-            logger.error(f"Error retrying pending messages for license {license_id}: {e}")
+            logger.error(f"Error retrying pending messages for license {license_id}: {type(e).__name__}: {e}", exc_info=True)
     
     async def _poll_email(self, license_id: int):
         """Poll email for new messages using Gmail API"""
