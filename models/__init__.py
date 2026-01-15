@@ -84,6 +84,7 @@ from .customers import (
     # Preferences
     get_preferences,
     update_preferences,
+    delete_preferences,
     # Notifications
     create_notification,
     get_notifications,
@@ -167,6 +168,7 @@ __all__ = [
     # Preferences
     "get_preferences",
     "update_preferences",
+    "delete_preferences",
     # Notifications
     "create_notification",
     "get_notifications",

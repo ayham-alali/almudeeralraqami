@@ -1086,6 +1086,26 @@ async def update_preferences(license_id: int, **kwargs) -> bool:
         return True
 
 
+async def delete_preferences(license_id: int, db=None) -> bool:
+    """Delete user preferences"""
+    if db:
+        await execute_sql(
+            db,
+            "DELETE FROM user_preferences WHERE license_key_id = ?",
+            [license_id]
+        )
+        return True
+
+    async with get_db() as new_db:
+        await execute_sql(
+            new_db,
+            "DELETE FROM user_preferences WHERE license_key_id = ?",
+            [license_id]
+        )
+        await commit_db(new_db)
+        return True
+
+
 # ============ Notifications ============
 
 async def create_notification(

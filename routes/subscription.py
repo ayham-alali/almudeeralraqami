@@ -443,6 +443,7 @@ async def delete_subscription(
     """Delete a subscription permanently (hard delete)"""
     from db_helper import get_db, fetch_one, execute_sql, commit_db
     from database import DB_TYPE
+    from models import delete_preferences
     from logging_config import get_logger
     
     logger = get_logger(__name__)
@@ -471,7 +472,7 @@ async def delete_subscription(
                         await execute_sql(db, "DELETE FROM telegram_configs WHERE license_key_id = $1", [license_id])
                         
                         # Fix: Delete user preferences to avoid FK violation
-                        await execute_sql(db, "DELETE FROM user_preferences WHERE license_key_id = $1", [license_id])
+                        await delete_preferences(license_id, db=db)
                         
                         # Finally delete the subscription
                         await execute_sql(db, "DELETE FROM license_keys WHERE id = $1", [license_id])
@@ -486,7 +487,7 @@ async def delete_subscription(
                     await execute_sql(db, "DELETE FROM email_configs WHERE license_key_id = ?", [license_id])
                     await execute_sql(db, "DELETE FROM telegram_configs WHERE license_key_id = ?", [license_id])
                     # Fix: Delete user preferences to avoid FK violation
-                    await execute_sql(db, "DELETE FROM user_preferences WHERE license_key_id = ?", [license_id])
+                    await delete_preferences(license_id, db=db)
                     await execute_sql(db, "DELETE FROM license_keys WHERE id = ?", [license_id])
             
             await commit_db(db)
