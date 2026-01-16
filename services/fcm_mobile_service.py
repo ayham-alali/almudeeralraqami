@@ -1,18 +1,104 @@
 """
 Al-Mudeer - FCM Mobile Push Service
 Handles Firebase Cloud Messaging for mobile app push notifications
+
+Supports both:
+- FCM HTTP v1 API (recommended, uses service account)
+- Legacy HTTP API (deprecated fallback, uses server key)
 """
 
 import os
 import json
 import httpx
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from logging_config import get_logger
 
 logger = get_logger(__name__)
 
-# FCM Server Key from environment (for HTTP v1 API, we use service account)
+# === FCM Configuration ===
+# Legacy API (deprecated - will be removed by Google)
 FCM_SERVER_KEY = os.getenv("FCM_SERVER_KEY")
+
+# V1 API (recommended) - requires service account
+FCM_PROJECT_ID = os.getenv("FCM_PROJECT_ID")  # Firebase project ID
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")  # Path to service account JSON
+
+# Check if v1 API is available
+FCM_V1_AVAILABLE = False
+_cached_access_token = None
+_token_expiry = None
+
+try:
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import Request
+    import datetime
+    
+    FCM_V1_AVAILABLE = bool(FCM_PROJECT_ID and GOOGLE_APPLICATION_CREDENTIALS)
+    if FCM_V1_AVAILABLE:
+        logger.info(f"FCM: v1 API configured for project '{FCM_PROJECT_ID}'")
+    else:
+        if not FCM_PROJECT_ID:
+            logger.info("FCM: FCM_PROJECT_ID not set, will use legacy API")
+        if not GOOGLE_APPLICATION_CREDENTIALS:
+            logger.info("FCM: GOOGLE_APPLICATION_CREDENTIALS not set, will use legacy API")
+except ImportError:
+    logger.warning("FCM: google-auth not installed. Install with: pip install google-auth")
+    logger.info("FCM: Will use legacy API if FCM_SERVER_KEY is set")
+
+
+def _get_access_token() -> Optional[str]:
+    """Get OAuth2 access token for FCM v1 API."""
+    global _cached_access_token, _token_expiry
+    
+    if not FCM_V1_AVAILABLE:
+        return None
+    
+    try:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+        import datetime
+        
+        # Check if cached token is still valid (with 5 min buffer)
+        if _cached_access_token and _token_expiry:
+            if datetime.datetime.utcnow() < _token_expiry - datetime.timedelta(minutes=5):
+                return _cached_access_token
+        
+        # Get credentials - try file first, then JSON env var
+        credentials = None
+        
+        # Option 1: File path
+        if GOOGLE_APPLICATION_CREDENTIALS and os.path.exists(GOOGLE_APPLICATION_CREDENTIALS):
+            credentials = service_account.Credentials.from_service_account_file(
+                GOOGLE_APPLICATION_CREDENTIALS,
+                scopes=['https://www.googleapis.com/auth/firebase.messaging']
+            )
+            logger.debug("FCM: Using credentials from file")
+        
+        # Option 2: JSON content in env var (for Railway/Docker)
+        elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"):
+            import json as json_module
+            service_account_info = json_module.loads(os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON"))
+            credentials = service_account.Credentials.from_service_account_info(
+                service_account_info,
+                scopes=['https://www.googleapis.com/auth/firebase.messaging']
+            )
+            logger.debug("FCM: Using credentials from JSON env var")
+        
+        if not credentials:
+            logger.warning("FCM: No valid credentials found")
+            return None
+        
+        credentials.refresh(Request())
+        
+        _cached_access_token = credentials.token
+        _token_expiry = credentials.expiry
+        
+        logger.debug("FCM: OAuth2 access token refreshed")
+        return _cached_access_token
+        
+    except Exception as e:
+        logger.error(f"FCM: Failed to get access token: {e}")
+        return None
 
 
 async def ensure_fcm_tokens_table():
@@ -127,12 +213,116 @@ async def send_fcm_notification(
     link: Optional[str] = None
 ) -> bool:
     """
-    Send push notification to a single FCM token using legacy HTTP API.
+    Send push notification to a single FCM token.
     
-    For production, consider migrating to HTTP v1 API with service account.
+    Uses FCM HTTP v1 API if configured (recommended), 
+    otherwise falls back to legacy HTTP API (deprecated).
+    """
+    # Try v1 API first
+    if FCM_V1_AVAILABLE:
+        result = await _send_fcm_v1(token, title, body, data, link)
+        if result is not None:  # None means v1 failed, try legacy
+            return result
+    
+    # Fallback to legacy API
+    return await _send_fcm_legacy(token, title, body, data, link)
+
+
+async def _send_fcm_v1(
+    token: str,
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+    link: Optional[str] = None
+) -> Optional[bool]:
+    """
+    Send notification via FCM HTTP v1 API.
+    Returns None if v1 API is unavailable or failed (to trigger fallback).
+    """
+    access_token = _get_access_token()
+    if not access_token:
+        return None
+    
+    try:
+        # Build v1 API payload
+        message_data = data.copy() if data else {}
+        if link:
+            message_data["link"] = link
+        
+        # Convert all data values to strings (FCM v1 requirement)
+        message_data = {k: str(v) for k, v in message_data.items()}
+        
+        payload = {
+            "message": {
+                "token": token,
+                "notification": {
+                    "title": title,
+                    "body": body
+                },
+                "android": {
+                    "priority": "high",
+                    "notification": {
+                        "sound": "default",
+                        "click_action": "FLUTTER_NOTIFICATION_CLICK"
+                    }
+                },
+                "apns": {
+                    "payload": {
+                        "aps": {
+                            "sound": "default",
+                            "badge": 1
+                        }
+                    }
+                },
+                "data": message_data
+            }
+        }
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"https://fcm.googleapis.com/v1/projects/{FCM_PROJECT_ID}/messages:send",
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                },
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"FCM v1: Notification sent: {title[:30]}...")
+                return True
+            elif response.status_code == 404:
+                # Token not found/expired - mark as failed
+                logger.warning(f"FCM v1: Token not found (expired)")
+                return False
+            elif response.status_code == 401:
+                # Auth error - clear cached token and fallback
+                global _cached_access_token
+                _cached_access_token = None
+                logger.warning("FCM v1: Auth failed, falling back to legacy")
+                return None
+            else:
+                logger.error(f"FCM v1: HTTP error {response.status_code}: {response.text}")
+                return None
+                
+    except Exception as e:
+        logger.error(f"FCM v1: Error sending notification: {e}")
+        return None
+
+
+async def _send_fcm_legacy(
+    token: str,
+    title: str,
+    body: str,
+    data: Optional[dict] = None,
+    link: Optional[str] = None
+) -> bool:
+    """
+    Send notification via legacy FCM HTTP API (deprecated).
     """
     if not FCM_SERVER_KEY:
-        logger.warning("FCM: Server key not configured")
+        logger.warning("FCM: Neither v1 API nor legacy server key configured")
         return False
     
     try:
@@ -165,17 +355,17 @@ async def send_fcm_notification(
             if response.status_code == 200:
                 result = response.json()
                 if result.get("success", 0) > 0:
-                    logger.info(f"FCM: Notification sent: {title[:30]}...")
+                    logger.info(f"FCM legacy: Notification sent: {title[:30]}...")
                     return True
                 else:
-                    logger.warning(f"FCM: Notification failed: {result}")
+                    logger.warning(f"FCM legacy: Notification failed: {result}")
                     return False
             else:
-                logger.error(f"FCM: HTTP error {response.status_code}: {response.text}")
+                logger.error(f"FCM legacy: HTTP error {response.status_code}: {response.text}")
                 return False
                 
     except Exception as e:
-        logger.error(f"FCM: Error sending notification: {e}")
+        logger.error(f"FCM legacy: Error sending notification: {e}")
         return False
 
 

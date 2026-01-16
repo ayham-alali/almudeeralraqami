@@ -1181,6 +1181,26 @@ async def create_notification(
     except Exception:
         pass  # Web Push is optional, don't fail if it errors
     
+    # Send FCM Mobile Push notification in background (non-blocking)
+    try:
+        from services.fcm_mobile_service import send_fcm_to_license
+        import asyncio
+        asyncio.create_task(
+            send_fcm_to_license(
+                license_id=license_id,
+                title=title,
+                body=message,
+                data={
+                    "type": notification_type,
+                    "notification_id": str(notification_id),
+                    "priority": priority
+                },
+                link=link
+            )
+        )
+    except Exception:
+        pass  # FCM is optional, don't fail if it errors
+    
     return notification_id
 
 
