@@ -147,7 +147,8 @@ async def ensure_fcm_tokens_table():
                 CREATE TABLE IF NOT EXISTS fcm_tokens (
                     id {id_type},
                     license_key_id INTEGER NOT NULL,
-                    token TEXT NOT NULL UNIQUE,
+                    token TEXT NOT NULL,
+                    device_id TEXT,
                     platform TEXT DEFAULT 'android',
                     is_active BOOLEAN DEFAULT TRUE,
                     created_at {ts_default},
@@ -166,27 +167,66 @@ async def ensure_fcm_tokens_table():
                 ON fcm_tokens(license_key_id) 
             """)
             
+            await execute_sql(db, """
+                CREATE INDEX IF NOT EXISTS idx_fcm_device_id
+                ON fcm_tokens(device_id)
+            """)
+
             await commit_db(db)
             logger.info("FCM: fcm_tokens table verified")
         except Exception as e:
             logger.error(f"FCM: Verify table failed: {e}")
 
+async def ensure_device_id_column():
+    """Ensure device_id column exists (migration helper)."""
+    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
+    
+    async with get_db() as db:
+        try:
+            if DB_TYPE == "postgresql":
+                await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN IF NOT EXISTS device_id TEXT")
+                await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_device_id ON fcm_tokens(device_id)")
+            else:
+                try:
+                    await execute_sql(db, "ALTER TABLE fcm_tokens ADD COLUMN device_id TEXT")
+                    await execute_sql(db, "CREATE INDEX IF NOT EXISTS idx_fcm_device_id ON fcm_tokens(device_id)")
+                except:
+                    pass
+            await commit_db(db)
+        except Exception as e:
+            logger.error(f"FCM: Failed to add device_id column: {e}")
+
 
 async def save_fcm_token(
     license_id: int,
     token: str,
-    platform: str = "android"
+    platform: str = "android",
+    device_id: Optional[str] = None
 ) -> int:
-    """Save a new FCM token for a license."""
+    """
+    Save a new FCM token for a license.
+    Uses device_id for deduplication if provided.
+    """
     from db_helper import get_db, fetch_one, execute_sql, commit_db
     
     async with get_db() as db:
-        # Check if token already exists
-        existing = await fetch_one(
-            db,
-            "SELECT id FROM fcm_tokens WHERE token = ?",
-            [token]
-        )
+        existing = None
+        
+        # Strategy 1: Match by device_id (preferred)
+        if device_id:
+            existing = await fetch_one(
+                db,
+                "SELECT id FROM fcm_tokens WHERE device_id = ? AND license_key_id = ?",
+                [device_id, license_id]
+            )
+            
+        # Strategy 2: Match by token (fallback/migration)
+        if not existing:
+             existing = await fetch_one(
+                db,
+                "SELECT id FROM fcm_tokens WHERE token = ?",
+                [token]
+            )
         
         if existing:
             # Update existing token
@@ -194,32 +234,33 @@ async def save_fcm_token(
                 db,
                 """
                 UPDATE fcm_tokens 
-                SET license_key_id = ?, platform = ?, is_active = TRUE, updated_at = CURRENT_TIMESTAMP
-                WHERE token = ?
+                SET license_key_id = ?, token = ?, platform = ?, device_id = ?, is_active = TRUE, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
                 """,
-                [license_id, platform, token]
+                [license_id, token, platform, device_id, existing["id"]]
             )
             await commit_db(db)
-            logger.info(f"FCM: Token updated for license {license_id}")
+            logger.info(f"FCM: Token updated for license {license_id} (device_id: {device_id})")
             return existing["id"]
         
         # Create new token
         await execute_sql(
             db,
             """
-            INSERT INTO fcm_tokens (license_key_id, token, platform)
-            VALUES (?, ?, ?)
+            INSERT INTO fcm_tokens (license_key_id, token, platform, device_id)
+            VALUES (?, ?, ?, ?)
             """,
-            [license_id, token, platform]
+            [license_id, token, platform, device_id]
         )
         
-        row = await fetch_one(
-            db,
-            "SELECT id FROM fcm_tokens WHERE token = ?",
-            [token]
-        )
+        # Return ID
+        if device_id:
+             row = await fetch_one(db, "SELECT id FROM fcm_tokens WHERE device_id = ? AND license_key_id = ?", [device_id, license_id])
+        else:
+             row = await fetch_one(db, "SELECT id FROM fcm_tokens WHERE token = ?", [token])
+
         await commit_db(db)
-        logger.info(f"FCM: Token registered for license {license_id}")
+        logger.info(f"FCM: New token registered for license {license_id}")
         return row["id"] if row else 0
 
 

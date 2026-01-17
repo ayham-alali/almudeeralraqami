@@ -545,6 +545,7 @@ class MobilePushToken(BaseModel):
     """Mobile FCM token registration"""
     token: str = Field(..., description="FCM device token")
     platform: str = Field(default="android", description="android or ios")
+    device_id: Optional[str] = Field(None, description="Unique device identifier")
 
 
 @router.post("/push/mobile/register")
@@ -577,7 +578,8 @@ async def register_mobile_token(
     token_id = await save_fcm_token(
         license_id=license["license_id"],
         token=data.token,
-        platform=data.platform
+        platform=data.platform,
+        device_id=data.device_id
     )
     
     return {

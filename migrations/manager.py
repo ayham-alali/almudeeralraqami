@@ -146,8 +146,19 @@ migration_manager.register_migration(
     up_sql="""
         -- Add missing columns to user_preferences table
         -- These columns are needed for AI tone configuration
+        -- Implementation handled by ensure_user_preferences_columns on startup as it is complex
     """
 )
+
+# Migration to add device_id to fcm_tokens
+migration_manager.register_migration(
+    version=5,
+    name="add_device_id_to_fcm_tokens",
+    up_sql="""
+        -- Add device_id column to fcm_tokens table
+    """
+)
+
 
 
 async def ensure_inbox_columns():
