@@ -62,6 +62,7 @@ from .inbox import (
     approve_outbox_message,
     mark_outbox_sent,
     get_pending_outbox,
+    search_messages,
 )
 
 # Customers, Analytics, Preferences, Notifications
@@ -151,7 +152,9 @@ __all__ = [
     "create_outbox_message",
     "approve_outbox_message",
     "mark_outbox_sent",
+    "mark_outbox_sent",
     "get_pending_outbox",
+    "search_messages",
     # Customers
     "get_or_create_customer",
     "get_customers",
