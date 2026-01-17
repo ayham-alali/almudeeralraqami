@@ -5,7 +5,7 @@ Customers, Analytics, Preferences, Voice Transcription
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Union
 from datetime import datetime, timedelta
 
 from models import (
@@ -285,7 +285,7 @@ class PreferencesUpdate(BaseModel):
     business_name: Optional[str] = None
     industry: Optional[str] = None
     products_services: Optional[str] = None
-    preferred_languages: Optional[str] = None
+    preferred_languages: Optional[Union[str, List[str]]] = None
     reply_length: Optional[str] = None
     formality_level: Optional[str] = None
 

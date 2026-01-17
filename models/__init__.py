@@ -83,10 +83,10 @@ from .customers import (
     update_daily_analytics,
     get_ai_usage_today,
     get_analytics_summary,
-    # Preferences
-    get_preferences,
-    update_preferences,
-    delete_preferences,
+    # Analytics
+    update_daily_analytics,
+    get_ai_usage_today,
+    get_analytics_summary,
     # Notifications
     create_notification,
     get_notifications,
@@ -95,6 +95,12 @@ from .customers import (
     mark_all_notifications_read,
     delete_old_notifications,
     create_smart_notification,
+)
+
+from .preferences import (
+    get_preferences,
+    update_preferences,
+    delete_preferences,
 )
 
 # Re-export aiosqlite for backward compatibility
