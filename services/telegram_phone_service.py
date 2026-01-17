@@ -1047,3 +1047,13 @@ class TelegramPhoneService:
                     await client.disconnect()
                 except:
                     pass
+
+# Singleton instance for Telegram Phone Service
+_telegram_phone_instance: Optional[TelegramPhoneService] = None
+
+def get_telegram_phone_service() -> TelegramPhoneService:
+    """Get or create singleton instance of TelegramPhoneService"""
+    global _telegram_phone_instance
+    if _telegram_phone_instance is None:
+        _telegram_phone_instance = TelegramPhoneService()
+    return _telegram_phone_instance
