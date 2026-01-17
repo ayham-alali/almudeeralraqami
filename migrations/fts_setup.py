@@ -79,7 +79,7 @@ async def _setup_sqlite_fts(db):
         CREATE TRIGGER IF NOT EXISTS outbox_fts_insert AFTER INSERT ON outbox_messages
         BEGIN
             INSERT INTO messages_fts(body, sender_name, source_table, source_id, license_id)
-            VALUES (new.body, new.target, 'outbox', new.id, new.license_key_id);
+            VALUES (new.body, COALESCE(new.recipient_email, new.recipient_id), 'outbox', new.id, new.license_key_id);
         END;
     """)
     
@@ -94,7 +94,7 @@ async def _setup_sqlite_fts(db):
         CREATE TRIGGER IF NOT EXISTS outbox_fts_update AFTER UPDATE ON outbox_messages
         BEGIN
             UPDATE messages_fts 
-            SET body = new.body, sender_name = new.target 
+            SET body = new.body, sender_name = COALESCE(new.recipient_email, new.recipient_id) 
             WHERE source_table = 'outbox' AND source_id = new.id;
         END;
     """)
@@ -121,7 +121,7 @@ async def _setup_sqlite_fts(db):
     
     await execute_sql(db, """
         INSERT INTO messages_fts(body, sender_name, source_table, source_id, license_id)
-        SELECT body, target, 'outbox', id, license_key_id FROM outbox_messages
+        SELECT body, COALESCE(recipient_email, recipient_id), 'outbox', id, license_key_id FROM outbox_messages
     """)
     
     logger.info("SQLite FTS5 setup completed and populated.")
@@ -179,7 +179,7 @@ async def _setup_postgres_fts(db):
          # Update existing
         await execute_sql(db, """
             UPDATE outbox_messages 
-            SET search_vector = to_tsvector('english', coalesce(body, '') || ' ' || coalesce(target, ''))
+            SET search_vector = to_tsvector('english', coalesce(body, '') || ' ' || coalesce(COALESCE(recipient_email, recipient_id), ''))
             WHERE search_vector IS NULL
         """)
 
@@ -187,7 +187,7 @@ async def _setup_postgres_fts(db):
         await execute_sql(db, """
             CREATE OR REPLACE FUNCTION outbox_tsvector_trigger() RETURNS trigger AS $$
             BEGIN
-                new.search_vector := to_tsvector('english', coalesce(new.body, '') || ' ' || coalesce(new.target, ''));
+                new.search_vector := to_tsvector('english', coalesce(new.body, '') || ' ' || coalesce(COALESCE(new.recipient_email, new.recipient_id), ''));
                 RETURN new;
             END
             $$ LANGUAGE plpgsql;

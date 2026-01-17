@@ -451,10 +451,10 @@ async def get_inbox_conversations(
     
     query = f"""
         SELECT 
-            sender_contact, sender_name, channel,
+            ic.sender_contact, ic.sender_name, ic.channel,
             last_message_body as body,
             last_message_at as created_at,
-            status,
+            ic.status,
             unread_count,
             message_count,
             cp.is_online,
@@ -1294,8 +1294,8 @@ async def search_messages(
                         'outbox' as source_table, 
                         id, 
                         body, 
-                        target as sender_name, 
-                        target as sender_contact,
+                        COALESCE(recipient_email, recipient_id) as sender_name, 
+                        COALESCE(recipient_email, recipient_id) as sender_contact,
                         created_at as timestamp, 
                         NULL as subject,
                         1 as is_read,
@@ -1303,7 +1303,7 @@ async def search_messages(
                     FROM outbox_messages
                     WHERE search_vector @@ websearch_to_tsquery('english', $1) 
                       AND license_key_id = $2
-                      AND ($3::text IS NULL OR target = $3)
+                      AND ($3::text IS NULL OR COALESCE(recipient_email, recipient_id) = $3)
                 )
                 SELECT *, count(*) OVER() as full_count 
                 FROM search_results
@@ -1335,8 +1335,8 @@ async def search_messages(
                         'outbox' as source_table, 
                         id, 
                         body, 
-                        target as sender_name, 
-                        target as sender_contact,
+                        COALESCE(recipient_email, recipient_id) as sender_name, 
+                        COALESCE(recipient_email, recipient_id) as sender_contact,
                         created_at as timestamp, 
                         NULL as subject,
                         1 as is_read,
@@ -1363,7 +1363,7 @@ async def search_messages(
                     AND (
                         (m.source_table = 'inbox' AND i.sender_contact = ?)
                         OR
-                        (m.source_table = 'outbox' AND o.target = ?)
+                        (m.source_table = 'outbox' AND COALESCE(o.recipient_email, o.recipient_id) = ?)
                     )
                 """ 
                 # But wait, parameter binding order!
@@ -1380,7 +1380,7 @@ async def search_messages(
                     m.sender_name,
                     CASE 
                         WHEN m.source_table = 'inbox' THEN i.sender_contact 
-                        ELSE o.target 
+                        ELSE COALESCE(o.recipient_email, o.recipient_id) 
                     END as sender_contact,
                     CASE 
                         WHEN m.source_table = 'inbox' THEN i.received_at 

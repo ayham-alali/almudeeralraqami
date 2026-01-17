@@ -38,18 +38,34 @@ async def send_typing_indicator(
     # Send to external platform
     try:
         if data.channel == "telegram":
-            import models
-            from services.telegram_phone_service import TelegramPhoneService
-            
-            # Find the session used for this contact
-            session = await models.get_telegram_phone_session(license_id, data.sender_contact)
-            if session and session.session_string:
-                service = TelegramPhoneService()
-                await service.set_typing(
-                    session.session_string,
-                    data.sender_contact,
-                    action="typing" if data.is_active else "cancel"
-                )
+            # 1. Try Telegram Bot first (preferred/more stable)
+            try:
+                from services.telegram_service import TelegramBotManager
+                from models.telegram_config import get_telegram_bot_token
+                
+                bot_token = await get_telegram_bot_token(license_id)
+                if bot_token:
+                    bot = TelegramBotManager.get_bot(license_id, bot_token)
+                    await bot.send_typing_action(data.sender_contact)
+                    return {"success": True}
+            except Exception:
+                pass
+
+            # 2. Fallback to Telegram Phone API (User Account)
+            try:
+                import models
+                from services.telegram_phone_service import TelegramPhoneService
+                
+                session = await models.get_telegram_phone_session(license_id, data.sender_contact)
+                if session and session.session_string:
+                    service = TelegramPhoneService()
+                    await service.set_typing(
+                        session.session_string,
+                        data.sender_contact,
+                        action="typing" if data.is_active else "cancel"
+                    )
+            except Exception:
+                pass
                 
         elif data.channel == "whatsapp":
             from services.whatsapp_service import WhatsAppService, get_whatsapp_config
