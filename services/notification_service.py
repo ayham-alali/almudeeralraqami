@@ -60,6 +60,7 @@ class NotificationPayload:
     priority: NotificationPriority
     link: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    image: Optional[str] = None
 
 
 async def init_notification_tables():
@@ -595,7 +596,8 @@ async def send_notification(
                     title=payload.title,
                     body=payload.message,
                     link=payload.link,
-                    data=payload.metadata
+                    data=payload.metadata,
+                    image=payload.image
                 )
                 results["mobile_push"] = {"success": True, "count": fcm_count}
             except Exception as e:
@@ -707,6 +709,9 @@ async def process_message_notifications(
     # Get all active rules
     rules = await get_rules(license_id)
     
+    # Collect all matching rules first
+    matched_rules = []
+
     for rule in rules:
         should_trigger = False
         
@@ -721,8 +726,8 @@ async def process_message_notifications(
         
         elif rule["condition_type"] == "keyword":
             keywords = rule["condition_value"].split(",")
-            message_text = message_data.get("body", "") + " " + message_data.get("subject", "")
-            if any(kw.strip() in message_text for kw in keywords):
+            message_text = (message_data.get("body", "") + " " + message_data.get("subject", "")).lower()
+            if any(kw.strip().lower() in message_text for kw in keywords):
                 should_trigger = True
         
         elif rule["condition_type"] == "vip_customer":
@@ -730,33 +735,90 @@ async def process_message_notifications(
                 should_trigger = True
 
         elif rule["condition_type"] == "waiting_for_reply":
-             # Trigger for any valid incoming message that is not auto-replied/spam
+             # Trigger for any valid incoming message
              should_trigger = True
         
-        # Trigger notification if condition met
         if should_trigger:
-            payload = NotificationPayload(
-                title=f"تنبيه: {rule['name']}",
-                message=f"رسالة جديدة من {message_data.get('sender_name', 'مرسل غير معروف')}: {message_data.get('body', '')[:100]}...",
-                priority=NotificationPriority.HIGH if rule["condition_type"] in ["urgency", "sentiment"] else NotificationPriority.NORMAL,
-                link=f"/dashboard/inbox",
-                metadata={
-                    "المرسل": message_data.get("sender_name", "-"),
-                    "القناة": message_data.get("channel", "-"),
-                    "النوع": message_data.get("intent", "-")
-                }
-            )
+            matched_rules.append(rule)
             
-            channels = [
-                NotificationChannel(ch) for ch in rule["channels"]
-                if ch in [e.value for e in NotificationChannel]
-            ]
-            
-            result = await send_notification(license_id, payload, channels)
-            notifications_sent.append({
-                "rule": rule["name"],
-                "result": result
-            })
+    if not matched_rules:
+        return []
+
+    # === Deduplication Logic ===
+    # 1. Separate generic vs specific rules
+    specific_rules = [r for r in matched_rules if r["condition_type"] != "waiting_for_reply"]
+    generic_rules = [r for r in matched_rules if r["condition_type"] == "waiting_for_reply"]
+    
+    final_rule = None
+    
+    # 2. If we have ANY specific rule, ignore the generic "waiting_for_reply"
+    if specific_rules:
+        # 3. If multiple specific rules, prioritize by type (Urgency > Sentiment > VIP > Keyword)
+        # We can implement a simple priority map
+        priority_map = {
+            "urgency": 100,
+            "sentiment": 90,
+            "vip_customer": 80,
+            "keyword": 70
+        }
+        # Sort by priority desc
+        specific_rules.sort(key=lambda x: priority_map.get(x["condition_type"], 0), reverse=True)
+        final_rule = specific_rules[0]
+    elif generic_rules:
+        # Only generic matched
+        final_rule = generic_rules[0]
+        
+    if final_rule:
+        # Standard WhatsApp-style notification
+        # Title: Sender Name
+        # Body: Message Preview
+        sender_name = message_data.get('sender_name', 'New Message')
+        body_preview = message_data.get('body', '')[:100]
+        
+        # Try to get profile picture
+        profile_pic = None
+        sender_contact = message_data.get("sender_contact") or message_data.get("sender_id")
+        
+        if sender_contact:
+            try:
+                from models.customers import get_or_create_customer
+                # We use get_or_create just to be safe and get the record, 
+                # but typically it should exist if they messaged us
+                customer = await get_or_create_customer(
+                    license_id=license_id,
+                    phone=sender_contact if "@" not in str(sender_contact) else None,
+                    email=sender_contact if "@" in str(sender_contact) else None,
+                    name=sender_name
+                )
+                if customer:
+                    profile_pic = customer.get("profile_pic_url")
+            except Exception as e:
+                # Don't fail notification if customer fetch fails
+                pass
+
+        payload = NotificationPayload(
+            title=sender_name,
+            message=body_preview,
+            priority=NotificationPriority.NORMAL, # Always normal priority as requested
+            link=f"/dashboard/inbox",
+            metadata={
+                "sender": sender_name,
+                "channel": message_data.get("channel", "-"),
+                "type": "message"
+            },
+            image=profile_pic
+        )
+        
+        channels = [
+            NotificationChannel(ch) for ch in final_rule["channels"]
+            if ch in [e.value for e in NotificationChannel]
+        ]
+        
+        result = await send_notification(license_id, payload, channels)
+        notifications_sent.append({
+            "rule": final_rule["name"],
+            "result": result
+        })
     
     return notifications_sent
 

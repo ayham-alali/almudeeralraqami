@@ -46,6 +46,12 @@ async def get_or_create_customer(
         return {"id": None, "name": name, "is_blocked": True}
 
     async with get_db() as db:
+        # Check if profile_pic_url column exists (simplified migration)
+        try:
+             await execute_sql(db, "ALTER TABLE customers ADD COLUMN profile_pic_url TEXT")
+        except:
+             pass 
+
         # Try to find by phone or email
         if phone:
             row = await fetch_one(
@@ -68,34 +74,29 @@ async def get_or_create_customer(
         # Create new customer
         if DB_TYPE == "postgresql":
             # PostgreSQL: insert then fetch the last inserted row
-            # Note: Using separate INSERT + SELECT to work around RETURNING issues
             try:
                 await execute_sql(
                     db,
                     """
-                    INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment)
-                    VALUES (?, ?, ?, ?, 0, 'New')
+                    INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment, profile_pic_url)
+                    VALUES (?, ?, ?, ?, 0, 'New', ?)
                     """,
-                    [license_id, name, phone, email]
+                    [license_id, name, phone, email, None]
                 )
             except Exception as e:
-                # Fallback check for missing auto-increment/serial on 'id' column
+                # Fallback check for missing auto-increment
                 if "null value in column \"id\"" in str(e):
-                    import logging
-                    logger = logging.getLogger("models.customers")
-                    logger.warning(f"Auto-increment missing on customers table. Using manual ID generation fallback. Error: {e}")
-                    
-                    # Manual ID generation (not concurrency safe but prevents crash)
+                    # Manual ID generation fallback
                     max_row = await fetch_one(db, "SELECT MAX(id) as max_id FROM customers")
                     next_id = (max_row["max_id"] or 0) + 1
                     
                     await execute_sql(
                         db,
                         """
-                        INSERT INTO customers (id, license_key_id, name, phone, email, lead_score, segment)
-                        VALUES (?, ?, ?, ?, ?, 0, 'New')
+                        INSERT INTO customers (id, license_key_id, name, phone, email, lead_score, segment, profile_pic_url)
+                        VALUES (?, ?, ?, ?, ?, 0, 'New', ?)
                         """,
-                        [next_id, license_id, name, phone, email]
+                        [next_id, license_id, name, phone, email, None]
                     )
                 else:
                     raise e
@@ -119,10 +120,10 @@ async def get_or_create_customer(
             await execute_sql(
                 db,
                 """
-                INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment)
-                VALUES (?, ?, ?, ?, 0, 'New')
+                INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment, profile_pic_url)
+                VALUES (?, ?, ?, ?, 0, 'New', ?)
                 """,
-                [license_id, name, phone, email]
+                [license_id, name, phone, email, None]
             )
             await commit_db(db)
             
@@ -141,7 +142,8 @@ async def get_or_create_customer(
                 "total_messages": 0,
                 "is_vip": False,
                 "lead_score": 0,
-                "segment": "New"
+                "segment": "New",
+                "profile_pic_url": None
             }
 
 
@@ -178,7 +180,7 @@ async def update_customer(
     **kwargs
 ) -> bool:
     """Update customer details"""
-    allowed_fields = ['name', 'phone', 'email', 'company', 'notes', 'tags', 'is_vip']
+    allowed_fields = ['name', 'phone', 'email', 'company', 'notes', 'tags', 'is_vip', 'profile_pic_url']
     updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
     
     if not updates:
