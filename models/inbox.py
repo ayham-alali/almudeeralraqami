@@ -450,8 +450,8 @@ async def get_inbox_conversations(
     where_sql = " AND ".join(where_clauses)
     
     query = f"""
-        SELECT 
-            ic.id,
+            /* Mobile requires int ID, generate stable hash from string PK */
+            abs(hashtext(ic.sender_contact)) as id,
             ic.sender_contact, ic.sender_name, ic.channel,
             last_message_body as body,
             last_message_at as created_at,
