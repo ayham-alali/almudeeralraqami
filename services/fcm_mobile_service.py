@@ -349,11 +349,29 @@ async def _send_fcm_v1(
                 # Token not found/expired - mark as failed
                 logger.warning(f"FCM v1: Token not found (expired)")
                 return False
-            elif response.status_code == 401:
-                # Auth error - clear cached token and fallback
+            elif response.status_code == 401 or response.status_code == 403:
+                # Auth error or Permission denied - clear cached token to force refresh
                 global _cached_access_token
                 _cached_access_token = None
-                logger.warning("FCM v1: Auth failed, falling back to legacy")
+                
+                # Log detailed identity info to debug IAM issues
+                try:
+                    from google.oauth2 import service_account
+                    # Re-load creds just to inspect them
+                    creds = None
+                    if GOOGLE_APPLICATION_CREDENTIALS and GOOGLE_APPLICATION_CREDENTIALS.strip().startswith("{"):
+                        import json as json_module
+                        info = json_module.loads(GOOGLE_APPLICATION_CREDENTIALS)
+                        creds = service_account.Credentials.from_service_account_info(info)
+                    
+                    if creds and hasattr(creds, 'service_account_email'):
+                        logger.error(f"FCM v1 AUTH ERROR ({response.status_code}): Using account '{creds.service_account_email}'. This account lacks 'cloudmessaging.messages.create' permission.")
+                    else:
+                        logger.error(f"FCM v1 AUTH ERROR ({response.status_code}): Could not determine local service account email.")
+                except Exception as e:
+                    logger.error(f"FCM v1: Error debugging auth identity: {e}")
+                
+                logger.warning(f"FCM v1: Auth/Permission failed ({response.status_code}), clearing cache and falling back")
                 return None
             else:
                 logger.error(f"FCM v1: HTTP error {response.status_code}: {response.text}")
