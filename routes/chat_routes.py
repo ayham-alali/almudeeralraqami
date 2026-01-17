@@ -31,15 +31,15 @@ from models import (
     mark_outbox_sent,
     get_email_oauth_tokens,
     get_whatsapp_config,
+    get_telegram_phone_session_data,
 )
 from services import (
-    process_message,
     GmailOAuthService,
     GmailAPIService,
     TelegramService,
     TelegramPhoneService,
-    get_telegram_phone_session_data,
 )
+from agent import process_message
 from dependencies import get_license_from_header
 
 router = APIRouter(prefix="/api/chat", tags=["Chat"])
