@@ -44,6 +44,7 @@ from models import (
     init_enhanced_tables,
     get_whatsapp_config,
     get_customer_for_message,
+    search_messages,
 )
 from services import EmailService, EMAIL_PROVIDERS, TelegramService, TelegramBotManager, TELEGRAM_SETUP_GUIDE, GmailOAuthService, GmailAPIService, TelegramPhoneService
 from models import get_email_oauth_tokens
@@ -1439,6 +1440,26 @@ async def get_conversations(
         "has_more": offset + len(conversations) < total,
         "status_counts": status_counts
     }
+
+
+@router.get("/conversations/search")
+async def search_user_messages(
+    query: str,
+    sender_contact: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    license: dict = Depends(get_license_from_header)
+):
+    """
+    Search messages across all conversations or specific conversation.
+    """
+    return await search_messages(
+        license_id=license["license_id"],
+        query=query,
+        sender_contact=sender_contact,
+        limit=limit,
+        offset=offset
+    )
 
 
 @router.get("/conversations/{sender_contact:path}")

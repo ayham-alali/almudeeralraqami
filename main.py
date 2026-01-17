@@ -113,6 +113,13 @@ async def lifespan(app: FastAPI):
             logger.info("Database migrations completed")
         except Exception as e:
             logger.warning(f"Migration check failed (may be first run): {e}")
+
+        # Ensure Full-Text Search setup
+        try:
+            from migrations.fts_setup import setup_full_text_search
+            await setup_full_text_search()
+        except Exception as e:
+            logger.warning(f"FTS setup warning: {e}")
         
         await init_database()
         try:

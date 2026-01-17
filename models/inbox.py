@@ -131,6 +131,11 @@ async def save_inbox_message(
             # Non-critical, don't fail the message save
             pass
         
+        # Call upsert to update conversation state
+        # We do this asynchronously/fire-and-forget or await it? 
+        # Await it to ensure UI is consistent on next fetch.
+        await upsert_conversation_state(license_id, sender_contact, sender_name, channel)
+
         return message_id
 
 
@@ -151,6 +156,9 @@ async def update_inbox_analysis(
     ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
 
     async with get_db() as db:
+        # First, get the message details to pass to upsert_conversation_state
+        message_row = await fetch_one(db, "SELECT license_key_id, sender_contact, sender_name, channel FROM inbox_messages WHERE id = ?", [message_id])
+        
         try:
             # Try to update with all columns including language/dialect
             await execute_sql(
@@ -186,6 +194,14 @@ async def update_inbox_analysis(
                 await commit_db(db)
             else:
                 raise
+        
+        if message_row:
+            await upsert_conversation_state(
+                message_row["license_key_id"],
+                message_row["sender_contact"],
+                message_row["sender_name"],
+                message_row["channel"]
+            )
 
 
 async def get_inbox_messages(
@@ -332,6 +348,9 @@ async def approve_outbox_message(message_id: int, edited_body: str = None):
     ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
 
     async with get_db() as db:
+        # Get message details before update for upsert_conversation_state
+        message_row = await fetch_one(db, "SELECT license_key_id, inbox_message_id FROM outbox_messages WHERE id = ?", [message_id])
+        
         if edited_body:
             await execute_sql(
                 db,
@@ -354,6 +373,12 @@ async def approve_outbox_message(message_id: int, edited_body: str = None):
             )
         await commit_db(db)
 
+        if message_row and message_row["inbox_message_id"]:
+            # Fetch sender_contact from the original inbox message
+            inbox_msg = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [message_row["inbox_message_id"]])
+            if inbox_msg and inbox_msg["sender_contact"]:
+                await upsert_conversation_state(message_row["license_key_id"], inbox_msg["sender_contact"])
+
 
 async def mark_outbox_sent(message_id: int):
     """Mark outbox message as sent (DB agnostic)."""
@@ -362,6 +387,9 @@ async def mark_outbox_sent(message_id: int):
     ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
 
     async with get_db() as db:
+        # Get message details before update for upsert_conversation_state
+        message_row = await fetch_one(db, "SELECT license_key_id, inbox_message_id FROM outbox_messages WHERE id = ?", [message_id])
+
         await execute_sql(
             db,
             """
@@ -372,6 +400,12 @@ async def mark_outbox_sent(message_id: int):
             [ts_value, message_id],
         )
         await commit_db(db)
+
+        if message_row and message_row["inbox_message_id"]:
+            # Fetch sender_contact from the original inbox message
+            inbox_msg = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [message_row["inbox_message_id"]])
+            if inbox_msg and inbox_msg["sender_contact"]:
+                await upsert_conversation_state(message_row["license_key_id"], inbox_msg["sender_contact"])
 
 
 async def get_pending_outbox(license_id: int) -> List[dict]:
@@ -399,120 +433,43 @@ async def get_inbox_conversations(
     offset: int = 0
 ) -> List[dict]:
     """
-    Get inbox messages grouped by sender (chat-style view).
-    Returns one row per sender with their latest message and stats.
-    
-    IMPORTANT: Status filter is applied to the LATEST message of each conversation,
-    not to all messages. This ensures conversations are grouped correctly before filtering.
+    Get inbox conversations using the optimized `inbox_conversations` table.
+    This is O(1) per page instead of O(N) full scan.
     """
-    from db_helper import DB_TYPE
+    params = [license_id]
+    where_clauses = ["license_key_id = ?"]
     
-    # Build base WHERE for license (always applied)
-    base_where = "license_key_id = ?"
-    base_params = [license_id]
-    
-    # Channel filter can be applied in base query
-    if channel:
-        base_where += " AND channel = ?"
-        base_params.append(channel)
-    
-    # Build status filter (applied AFTER grouping)
-    # NOTE: Always exclude 'pending' - messages before AI responds should not show in UI
-    status_filter = ""
-    status_params = []
-    if status == 'sent':
-        status_filter = "status IN ('approved', 'sent', 'auto_replied')"
-    elif status:
-        status_filter = "status = ?"
-        status_params.append(status)
-    
-    # Always exclude 'pending' status (before AI responds)
-    pending_filter = "status != 'pending'"
-    
-    # Use database-specific query for grouping
-    if DB_TYPE == "postgresql":
-        # PostgreSQL: First get latest message per sender, THEN filter by status
-        # Build combined WHERE for final filter (always exclude pending + optional status filter)
-        final_where_parts = [pending_filter]
-        if status_filter:
-            final_where_parts.append(status_filter)
-        final_where = " AND ".join(final_where_parts)
+    if status and status != "all":
+        where_clauses.append("status = ?")
+        params.append(status)
         
-        query = f"""
-            WITH latest_per_sender AS (
-                SELECT DISTINCT ON (COALESCE(sender_contact, sender_id::text, 'unknown'))
-                    *,
-                    (SELECT COUNT(*) FROM inbox_messages m2 
-                     WHERE m2.license_key_id = inbox_messages.license_key_id 
-                     AND COALESCE(m2.sender_contact, m2.sender_id::text, 'unknown') = COALESCE(inbox_messages.sender_contact, inbox_messages.sender_id::text, 'unknown')
-                     AND m2.status != 'pending'
-                    ) as message_count,
-                     (SELECT COUNT(*) FROM inbox_messages m2 
-                      WHERE m2.license_key_id = inbox_messages.license_key_id 
-                      AND COALESCE(m2.sender_contact, m2.sender_id::text, 'unknown') = COALESCE(inbox_messages.sender_contact, inbox_messages.sender_id::text, 'unknown')
-                      AND m2.status = 'analyzed'
-                      AND (m2.is_read = FALSE OR m2.is_read IS NULL)
-                     ) as unread_count
-                FROM inbox_messages
-                WHERE {base_where}
-                ORDER BY COALESCE(sender_contact, sender_id::text, 'unknown'), created_at DESC
-            )
-            SELECT 
-                lps.id, lps.channel, lps.sender_name, lps.sender_contact, lps.sender_id, lps.subject, lps.body,
-                lps.intent, lps.urgency, lps.sentiment, lps.language, lps.dialect, lps.ai_summary, lps.ai_draft_response,
-                lps.status, lps.created_at, lps.received_at,
-                lps.message_count, lps.unread_count,
-                cp.is_online, cp.last_seen
-            FROM latest_per_sender lps
-            LEFT JOIN customer_presence cp ON cp.license_id = lps.license_key_id AND cp.sender_contact = lps.sender_contact
-            WHERE {final_where}
-            ORDER BY lps.created_at DESC
-            LIMIT ? OFFSET ?
-        """
-        params = base_params + status_params + [limit, offset]
-    else:
-        # SQLite version - get latest message per sender, then filter by status
-        # Build combined WHERE for final filter (always exclude pending + optional status filter)
-        final_filter_parts = [pending_filter]
-        if status_filter:
-            final_filter_parts.append(status_filter)
-        final_filter = " AND ".join(final_filter_parts)
+    if channel and channel != "all":
+        where_clauses.append("channel = ?")
+        params.append(channel)
         
-        query = f"""
-            SELECT 
-                m.*,
-                (SELECT COUNT(*) FROM inbox_messages m2 
-                 WHERE m2.license_key_id = m.license_key_id 
-                 AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
-                 AND m2.status != 'pending'
-                ) as message_count,
-                 (SELECT COUNT(*) FROM inbox_messages m2 
-                  WHERE m2.license_key_id = m.license_key_id 
-                  AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
-                  AND m2.status = 'analyzed'
-                  AND (m2.is_read = 0 OR m2.is_read IS NULL OR m2.is_read IS FALSE)
-                 ) as unread_count,
-                 cp.is_online,
-                 cp.last_seen
-            FROM inbox_messages m
-            LEFT JOIN customer_presence cp ON cp.license_id = m.license_key_id AND cp.sender_contact = m.sender_contact
-            WHERE {base_where}
-            AND m.id = (
-                SELECT m3.id FROM inbox_messages m3
-                WHERE m3.license_key_id = m.license_key_id
-                AND COALESCE(m3.sender_contact, m3.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
-                ORDER BY m3.created_at DESC
-                LIMIT 1
-            )
-            AND {final_filter}
-            ORDER BY m.created_at DESC
-            LIMIT ? OFFSET ?
-        """
-        params = base_params + status_params + [limit, offset]
+    where_sql = " AND ".join(where_clauses)
+    
+    query = f"""
+        SELECT 
+            sender_contact, sender_name, channel,
+            last_message_body as body,
+            last_message_at as created_at,
+            status,
+            unread_count,
+            message_count,
+            cp.is_online,
+            cp.last_seen
+        FROM inbox_conversations ic
+        LEFT JOIN customer_presence cp ON cp.license_id = ic.license_key_id AND cp.sender_contact = ic.sender_contact
+        WHERE {where_sql}
+        ORDER BY updated_at DESC
+        LIMIT ? OFFSET ?
+    """
+    params.extend([limit, offset])
     
     async with get_db() as db:
         rows = await fetch_all(db, query, params)
-        return rows
+        return [dict(row) for row in rows]
 
 
 async def get_inbox_conversations_count(
@@ -598,55 +555,31 @@ async def get_inbox_conversations_count(
 
 
 async def get_inbox_status_counts(license_id: int) -> dict:
-    """
-    Get status counts across all channels for badge display.
-    Counts unique conversations (senders) by their latest message status.
-    Returns: {analyzed: N, sent: N, ignored: N}
-    """
-    from db_helper import DB_TYPE
-    
-    if DB_TYPE == "postgresql":
-        query = """
-            WITH latest_per_sender AS (
-                SELECT DISTINCT ON (COALESCE(sender_contact, sender_id::text, 'unknown'))
-                    status
-                FROM inbox_messages
-                WHERE license_key_id = ?
-                ORDER BY COALESCE(sender_contact, sender_id::text, 'unknown'), created_at DESC
-            )
-            SELECT 
-                COALESCE(SUM(CASE WHEN status = 'analyzed' THEN 1 ELSE 0 END), 0) as analyzed,
-                COALESCE(SUM(CASE WHEN status IN ('approved', 'sent', 'auto_replied') THEN 1 ELSE 0 END), 0) as sent,
-                COALESCE(SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END), 0) as ignored
-            FROM latest_per_sender
-        """
-    else:
-        # SQLite version
-        query = """
-            SELECT 
-                COALESCE(SUM(CASE WHEN status = 'analyzed' THEN 1 ELSE 0 END), 0) as analyzed,
-                COALESCE(SUM(CASE WHEN status IN ('approved', 'sent', 'auto_replied') THEN 1 ELSE 0 END), 0) as sent,
-                COALESCE(SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END), 0) as ignored
-            FROM inbox_messages m
-            WHERE m.license_key_id = ?
-            AND m.id = (
-                SELECT m2.id FROM inbox_messages m2
-                WHERE m2.license_key_id = m.license_key_id
-                AND COALESCE(m2.sender_contact, m2.sender_id, 'unknown') = COALESCE(m.sender_contact, m.sender_id, 'unknown')
-                ORDER BY m2.created_at DESC
-                LIMIT 1
-            )
-        """
-    
+    """Get counts using the optimized inbox_conversations table."""
     async with get_db() as db:
-        row = await fetch_one(db, query, [license_id])
-        if row:
-            return {
-                "analyzed": row["analyzed"] or 0,
-                "sent": row["sent"] or 0,
-                "ignored": row["ignored"] or 0
-            }
-        return {"analyzed": 0, "sent": 0, "ignored": 0}
+        # We count CONVERSATIONS (rows in inbox_conversations), not individual messages
+        # This aligns with the "Inbox" view
+        
+        analyzed_row = await fetch_one(db, """
+            SELECT COUNT(*) as count FROM inbox_conversations 
+            WHERE license_key_id = ? AND status = 'analyzed'
+        """, [license_id])
+        
+        sent_row = await fetch_one(db, """
+            SELECT COUNT(*) as count FROM inbox_conversations 
+            WHERE license_key_id = ? AND status = 'sent'
+        """, [license_id])
+        
+        ignored_row = await fetch_one(db, """
+            SELECT COUNT(*) as count FROM inbox_conversations 
+            WHERE license_key_id = ? AND status = 'ignored'
+        """, [license_id])
+        
+        return {
+            "analyzed": analyzed_row["count"] if analyzed_row else 0,
+            "sent": sent_row["count"] if sent_row else 0,
+            "ignored": ignored_row["count"] if ignored_row else 0
+        }
 
 
 async def get_conversation_messages(
@@ -867,6 +800,8 @@ async def ignore_chat(license_id: int, sender_contact: str) -> int:
         result_count = row["count"] if row else 0
         logger.info(f"Messages now with status='ignored': {result_count}")
         
+        if result_count > 0:
+            await upsert_conversation_state(license_id, sender_contact)
         return result_count
 
 
@@ -911,12 +846,10 @@ async def approve_chat_messages(license_id: int, sender_contact: str) -> int:
             # Simpler to just return 1 or ignore count to avoid complex logic.
             [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
         )
-        # Actually, let's just return row count from UPDATE if possible? 
-        # execute_sql usually returns cursor/result. 
-        # But our helper returns None. 
         # So we'll just return 0 or query count of all approved.
         
         await commit_db(db)
+        await upsert_conversation_state(license_id, sender_contact)
         return 1
 
 
@@ -987,6 +920,7 @@ async def mark_chat_read(license_id: int, sender_contact: str) -> int:
             [license_id, sender_contact, sender_contact, f"%{sender_contact}%"]
         )
         await commit_db(db)
+        await upsert_conversation_state(license_id, sender_contact)
         return 1
 
 
@@ -1201,6 +1135,11 @@ async def edit_outbox_message(
         )
         await commit_db(db)
         
+        # Update conversation if this was the last message
+        recipient = message.get("recipient_email") or message.get("recipient_id")
+        if recipient:
+             await upsert_conversation_state(license_id, recipient)
+        
         return {
             "success": True,
             "message": "تم تعديل الرسالة بنجاح",
@@ -1251,6 +1190,11 @@ async def soft_delete_outbox_message(message_id: int, license_id: int) -> dict:
         )
         await commit_db(db)
         
+        # Update conversation
+        recipient = message.get("recipient_email") or message.get("recipient_id")
+        if recipient:
+             await upsert_conversation_state(license_id, recipient)
+        
         return {
             "success": True,
             "message": "تم حذف الرسالة بنجاح",
@@ -1293,3 +1237,372 @@ async def restore_deleted_message(message_id: int, license_id: int) -> dict:
             "success": True,
             "message": "تم استعادة الرسالة بنجاح"
         }
+
+
+async def search_messages(
+    license_id: int,
+    query: str,
+    sender_contact: str = None,
+    limit: int = 50,
+    offset: int = 0
+) -> dict:
+    """
+    Search messages using Full-Text Search.
+    Supports SQLite (FTS5) and PostgreSQL (TSVector).
+    Returns a unified list of inbox/outbox messages sorted by relevance.
+    """
+    if not query:
+        return {"messages": [], "total": 0}
+
+    results = []
+    
+    async with get_db() as db:
+        if DB_TYPE == "postgresql":
+            # PostgreSQL Search
+            params = [query, license_id, limit, offset]
+            filter_clause = ""
+            if sender_contact:
+                params = [query, license_id, sender_contact, limit, offset]
+                # We need to filter both parts of UNION
+                # Use parameter $3 for contact
+                filter_clause = "AND (sender_contact = $3 OR target = $3)" 
+                # Wait, separate queries need correct param index?
+                # Actually, simpler to inject param placeholder or adjust list.
+                # Let's simple use formatted string for parameter index or careful construction.
+                # $3 is contact.
+                
+                search_query = """
+                WITH search_results AS (
+                    SELECT 
+                        'inbox' as source_table, 
+                        id, 
+                        body, 
+                        sender_name, 
+                        sender_contact,
+                        received_at as timestamp, 
+                        subject,
+                        is_read::int as is_read,
+                        ts_rank(search_vector, websearch_to_tsquery('english', $1)) as rank
+                    FROM inbox_messages
+                    WHERE search_vector @@ websearch_to_tsquery('english', $1) 
+                      AND license_key_id = $2
+                      AND ($3::text IS NULL OR sender_contact = $3)
+                    
+                    UNION ALL
+                    
+                    SELECT 
+                        'outbox' as source_table, 
+                        id, 
+                        body, 
+                        target as sender_name, 
+                        target as sender_contact,
+                        created_at as timestamp, 
+                        NULL as subject,
+                        1 as is_read,
+                        ts_rank(search_vector, websearch_to_tsquery('english', $1)) as rank
+                    FROM outbox_messages
+                    WHERE search_vector @@ websearch_to_tsquery('english', $1) 
+                      AND license_key_id = $2
+                      AND ($3::text IS NULL OR target = $3)
+                )
+                SELECT *, count(*) OVER() as full_count 
+                FROM search_results
+                ORDER BY rank DESC, timestamp DESC
+                LIMIT $4 OFFSET $5
+                """
+                # Params: query, license_id, sender_contact, limit, offset
+            else:
+                 # No contact filter
+                 search_query = """
+                WITH search_results AS (
+                    SELECT 
+                        'inbox' as source_table, 
+                        id, 
+                        body, 
+                        sender_name, 
+                        sender_contact,
+                        received_at as timestamp, 
+                        subject,
+                        is_read::int as is_read,
+                        ts_rank(search_vector, websearch_to_tsquery('english', $1)) as rank
+                    FROM inbox_messages
+                    WHERE search_vector @@ websearch_to_tsquery('english', $1) 
+                      AND license_key_id = $2
+                    
+                    UNION ALL
+                    
+                    SELECT 
+                        'outbox' as source_table, 
+                        id, 
+                        body, 
+                        target as sender_name, 
+                        target as sender_contact,
+                        created_at as timestamp, 
+                        NULL as subject,
+                        1 as is_read,
+                        ts_rank(search_vector, websearch_to_tsquery('english', $1)) as rank
+                    FROM outbox_messages
+                    WHERE search_vector @@ websearch_to_tsquery('english', $1) 
+                      AND license_key_id = $2
+                )
+                SELECT *, count(*) OVER() as full_count 
+                FROM search_results
+                ORDER BY rank DESC, timestamp DESC
+                LIMIT $3 OFFSET $4
+                """
+            
+            rows = await fetch_all(db, search_query, params)
+            
+        else:
+            # SQLite Search
+            params = [query, license_id, limit, offset]
+            contact_filter = ""
+            if sender_contact:
+                params = [query, license_id, sender_contact, limit, offset]
+                contact_filter = """
+                    AND (
+                        (m.source_table = 'inbox' AND i.sender_contact = ?)
+                        OR
+                        (m.source_table = 'outbox' AND o.target = ?)
+                    )
+                """ 
+                # But wait, parameter binding order!
+                # query, license, contact, contact, limit, offset?
+                # Or use named parameters? fetch_all usually positional.
+                # Let's adjust params list manually.
+                params = [query, license_id, sender_contact, sender_contact, limit, offset]
+
+            search_query = f"""
+                SELECT 
+                    m.source_table,
+                    m.source_id as id,
+                    m.body,
+                    m.sender_name,
+                    CASE 
+                        WHEN m.source_table = 'inbox' THEN i.sender_contact 
+                        ELSE o.target 
+                    END as sender_contact,
+                    CASE 
+                        WHEN m.source_table = 'inbox' THEN i.received_at 
+                        ELSE o.created_at 
+                    END as timestamp,
+                    CASE 
+                        WHEN m.source_table = 'inbox' THEN i.subject 
+                        ELSE NULL 
+                    END as subject,
+                    CASE
+                        WHEN m.source_table = 'inbox' THEN COALESCE(i.is_read, 0)
+                        ELSE 1
+                    END as is_read
+                FROM messages_fts m
+                LEFT JOIN inbox_messages i ON m.source_table = 'inbox' AND m.source_id = i.id
+                LEFT JOIN outbox_messages o ON m.source_table = 'outbox' AND m.source_id = o.id
+                WHERE m.messages_fts MATCH ? 
+                  AND m.license_id = ?
+                  {contact_filter if sender_contact else ""}
+                ORDER BY m.rank, timestamp DESC
+                LIMIT ? OFFSET ?
+            """
+            
+            rows = await fetch_all(db, search_query, params)
+
+    # Formatting results
+    formatted_messages = []
+    full_count = 0
+    
+    if rows:
+        # Try to get full_count from first row if available (Postgres)
+        first_row = dict(rows[0])
+        full_count = first_row.get("full_count", len(rows)) # Approx for SQLite if not implemented
+
+        for row in rows:
+            r = dict(row)
+            formatted_messages.append({
+                "id": r["id"],
+                "type": r["source_table"], # 'inbox' or 'outbox'
+                "body": r["body"],
+                "sender_name": r["sender_name"],
+                "sender_contact": r["sender_contact"],
+                "subject": r.get("subject"),
+                "timestamp": r["timestamp"], # datetime object or string
+                "is_read": bool(r.get("is_read", True))
+            })
+
+    return {
+        "results": formatted_messages,
+        "count": full_count if full_count != 0 else len(formatted_messages)
+    }
+
+
+# ============ Conversation Optimization (Denormalized) ============
+
+async def upsert_conversation_state(
+    license_id: int, 
+    sender_contact: str, 
+    sender_name: Optional[str] = None,
+    channel: Optional[str] = None
+):
+    """
+    Recalculate and update the cached conversation state in `inbox_conversations`.
+    To best maintain consistency, we re-calculate from source tables.
+    This approach is "read-heavy write" but ensures accuracy vs incremental updates which can drift.
+    """
+    from db_helper import DB_TYPE
+    
+    async with get_db() as db:
+        # 1. Get stats
+        # Unread count: incoming messages that are analyzed but not read
+        # Message count: all non-pending messages
+        
+        # Calculate Unread Count
+        unread_conditions = "is_read = 0 OR is_read IS NULL"
+        if DB_TYPE == "postgresql":
+            unread_conditions = "is_read IS FALSE OR is_read IS NULL"
+            
+        row_unread = await fetch_one(db, f"""
+            SELECT COUNT(*) as count FROM inbox_messages 
+            WHERE license_key_id = ? AND sender_contact = ? 
+            AND status = 'analyzed' 
+            AND ({unread_conditions})
+        """, [license_id, sender_contact])
+        unread_count = row_unread["count"] if row_unread else 0
+        
+        # Calculate Total Message Count (excluding pending)
+        row_count = await fetch_one(db, """
+            SELECT COUNT(*) as count FROM inbox_messages 
+            WHERE license_key_id = ? AND sender_contact = ? 
+            AND status != 'pending'
+        """, [license_id, sender_contact])
+        message_count = row_count["count"] if row_count else 0
+        
+        # 2. Get Last Message (Source of Truth)
+        # Could be Inbox OR Outbox. We need the absolute latest.
+        # Efficient querying: Get latest from each, compare.
+        
+        latest_inbox = await fetch_one(db, """
+            SELECT id, body, received_at as created_at, status 
+            FROM inbox_messages 
+            WHERE license_key_id = ? AND sender_contact = ? AND status != 'pending'
+            ORDER BY created_at DESC LIMIT 1
+        """, [license_id, sender_contact])
+        
+        latest_outbox = await fetch_one(db, """
+            SELECT id, body, created_at, status 
+            FROM outbox_messages 
+            WHERE license_key_id = ? AND (recipient_email = ? OR recipient_id = ?) 
+            ORDER BY created_at DESC LIMIT 1
+        """, [license_id, sender_contact, sender_contact])
+        
+        # Determine winner
+        last_message = None
+        last_message_at = None
+        
+        last_inbox_time = None
+        if latest_inbox:
+            # Handle string/datetime differences
+            last_inbox_time = latest_inbox["created_at"]
+            if isinstance(last_inbox_time, str):
+                try: last_inbox_time = datetime.fromisoformat(last_inbox_time.replace('Z', '+00:00'))
+                except: pass
+        
+        last_outbox_time = None
+        if latest_outbox:
+             last_outbox_time = latest_outbox["created_at"]
+             if isinstance(last_outbox_time, str):
+                try: last_outbox_time = datetime.fromisoformat(last_outbox_time.replace('Z', '+00:00'))
+                except: pass
+
+        # Compare
+        is_inbox_latest = False
+        if last_inbox_time and last_outbox_time:
+            if last_inbox_time >= last_outbox_time:
+                last_message = latest_inbox
+                last_message_at = last_inbox_time
+                is_inbox_latest = True
+            else:
+                last_message = latest_outbox
+                last_message_at = last_outbox_time
+        elif last_inbox_time:
+            last_message = latest_inbox
+            last_message_at = last_inbox_time
+            is_inbox_latest = True
+        elif last_outbox_time:
+             last_message = latest_outbox
+             last_message_at = last_outbox_time
+        
+        if not last_message:
+            # No valid messages? (Maybe all pending). Skip update.
+            return
+
+        status = last_message["status"]
+        body = last_message["body"]
+        msg_id = last_message["id"]
+
+        # 3. Upsert
+        now = datetime.utcnow()
+        ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+        
+        # Prepare timestamp for DB
+        last_ts_value = last_message_at
+        if DB_TYPE != "postgresql" and isinstance(last_message_at, datetime):
+            last_ts_value = last_message_at.isoformat()
+        
+        fields = ["license_key_id", "sender_contact", "last_message_id", "last_message_body", 
+                  "last_message_at", "status", "unread_count", "message_count", "updated_at"]
+        params = [license_id, sender_contact, msg_id, body, last_ts_value, status, unread_count, message_count, ts_value]
+        
+        update_frame = """
+            last_message_id = ?, last_message_body = ?, last_message_at = ?, 
+            status = ?, unread_count = ?, message_count = ?, updated_at = ?
+        """
+        
+        if sender_name:
+            fields.append("sender_name")
+            params.append(sender_name)
+            update_frame += ", sender_name = ?"
+            
+        if channel:
+            fields.append("channel")
+            params.append(channel)
+            update_frame += ", channel = ?"
+            
+        # Placeholders
+        placeholders = ", ".join(["?" for _ in fields])
+        cols = ", ".join(fields)
+        
+        if DB_TYPE == "postgresql":
+            # Simple upsert
+            sql = f"""
+                INSERT INTO inbox_conversations ({cols}) VALUES ({placeholders})
+                ON CONFLICT (license_key_id, sender_contact) DO UPDATE SET
+                last_message_id = EXCLUDED.last_message_id,
+                last_message_body = EXCLUDED.last_message_body,
+                last_message_at = EXCLUDED.last_message_at,
+                status = EXCLUDED.status,
+                unread_count = EXCLUDED.unread_count,
+                message_count = EXCLUDED.message_count,
+                updated_at = EXCLUDED.updated_at
+            """
+            if sender_name: sql += ", sender_name = EXCLUDED.sender_name"
+            if channel: sql += ", channel = EXCLUDED.channel"
+            
+            await execute_sql(db, sql, params)
+            
+        else:
+             sql = f"""
+                INSERT INTO inbox_conversations ({cols}) VALUES ({placeholders})
+                ON CONFLICT(license_key_id, sender_contact) DO UPDATE SET
+                last_message_id = excluded.last_message_id,
+                last_message_body = excluded.last_message_body,
+                last_message_at = excluded.last_message_at,
+                status = excluded.status,
+                unread_count = excluded.unread_count,
+                message_count = excluded.message_count,
+                updated_at = excluded.updated_at
+            """
+             if sender_name: sql += ", sender_name = excluded.sender_name"
+             if channel: sql += ", channel = excluded.channel"
+             
+             await execute_sql(db, sql, params)
+        
+        await commit_db(db)
