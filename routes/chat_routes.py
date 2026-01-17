@@ -42,7 +42,7 @@ from services import (
 from agent import process_message
 from dependencies import get_license_from_header
 
-router = APIRouter(prefix="/api/chat", tags=["Chat"])
+router = APIRouter(prefix="/api/integrations", tags=["Chat"])
 
 # --- Schemas ---
 class ApprovalRequest(BaseModel):
@@ -186,7 +186,7 @@ async def send_chat_message(
 
 # --- Actions ---
 
-@router.post("/messages/{message_id}/approve")
+@router.post("/inbox/{message_id}/approve")
 async def approve_chat_message(
     message_id: int,
     approval: ApprovalRequest,
@@ -250,6 +250,12 @@ async def delete_message_route(message_id: int, license: dict = Depends(get_lice
     return result
 
 # --- Reactions ---
+
+@router.post("/inbox/{message_id}/read")
+async def mark_message_as_read_route(message_id: int, license: dict = Depends(get_license_from_header)):
+    from models.inbox import mark_message_as_read
+    await mark_message_as_read(message_id, license["license_id"])
+    return {"success": True}
 
 @router.post("/messages/{message_id}/reactions")
 async def add_reaction_route(message_id: int, reaction: ReactionRequest, license: dict = Depends(get_license_from_header)):

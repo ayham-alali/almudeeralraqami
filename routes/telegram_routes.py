@@ -25,7 +25,7 @@ from services import (
 )
 from dependencies import get_license_from_header
 
-router = APIRouter(prefix="/api/integrations/telegram", tags=["Telegram"])
+router = APIRouter(prefix="/api/integrations", tags=["Telegram"])
 
 # Guides
 TELEGRAM_SETUP_GUIDE = """
@@ -46,11 +46,11 @@ class TelegramPhoneVerifyRequest(BaseModel):
     session_id: str
     password: Optional[str] = None
 
-@router.get("/guide")
+@router.get("/telegram/guide")
 async def get_telegram_guide():
     return {"guide": TELEGRAM_SETUP_GUIDE}
 
-@router.post("/config")
+@router.post("/telegram/config")
 async def configure_telegram(
     config: TelegramConfigRequest,
     request: Request,
@@ -81,7 +81,7 @@ async def configure_telegram(
     
     return {"success": True, "message": "تم حفظ إعدادات تيليجرام بنجاح", "bot_username": bot_info.get("username")}
 
-@router.post("/set-webhook")
+@router.post("/telegram/webhook/set")
 async def set_telegram_webhook(
     request: Request,
     license: dict = Depends(get_license_from_header)
@@ -97,12 +97,12 @@ async def set_telegram_webhook(
     await telegram_service.set_webhook(webhook_url)
     return {"success": True, "message": "تم تسجيل الـ webhook بنجاح", "webhook_url": webhook_url}
 
-@router.get("/config")
+@router.get("/telegram/config")
 async def get_telegram_configuration(license: dict = Depends(get_license_from_header)):
     config = await get_telegram_config(license["license_id"], include_inactive=False)
     return {"config": config}
 
-@router.get("/webhook-status")
+@router.get("/telegram/webhook/status")
 async def get_telegram_webhook_status(license: dict = Depends(get_license_from_header)):
     from models import get_telegram_bot_token
     bot_token = await get_telegram_bot_token(license["license_id"])
@@ -113,7 +113,7 @@ async def get_telegram_webhook_status(license: dict = Depends(get_license_from_h
         resp = await client.get(f"https://api.telegram.org/bot{bot_token}/getWebhookInfo")
         return {"success": True, "webhook_info": resp.json().get("result", {})}
 
-@router.post("/webhook/{license_id}")
+@router.post("/telegram/webhook/{license_id}")
 async def telegram_webhook(
     license_id: int,
     request: Request,
@@ -173,7 +173,7 @@ async def telegram_webhook(
 
 # ============ Telegram Phone Routes (MTProto) ============
 
-@router.post("/phone/start")
+@router.post("/telegram-phone/start")
 async def start_telegram_phone_login(
     request: TelegramPhoneStartRequest,
     license: dict = Depends(get_license_from_header)
@@ -184,7 +184,7 @@ async def start_telegram_phone_login(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/phone/verify")
+@router.post("/telegram-phone/verify")
 async def verify_telegram_phone_code(
     request: TelegramPhoneVerifyRequest,
     license: dict = Depends(get_license_from_header)
@@ -210,12 +210,12 @@ async def verify_telegram_phone_code(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/phone/config")
+@router.get("/telegram-phone/config")
 async def get_telegram_phone_config(license: dict = Depends(get_license_from_header)):
     config = await get_telegram_phone_session(license["license_id"])
     return {"config": config}
 
-@router.post("/phone/test")
+@router.post("/telegram-phone/test")
 async def test_telegram_phone_connection(license: dict = Depends(get_license_from_header)):
     try:
         session_string = await get_telegram_phone_session_data(license["license_id"])
@@ -225,7 +225,7 @@ async def test_telegram_phone_connection(license: dict = Depends(get_license_fro
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/phone/disconnect")
+@router.post("/telegram-phone/disconnect")
 async def disconnect_telegram_phone(license: dict = Depends(get_license_from_header)):
     await deactivate_telegram_phone_session(license["license_id"])
     return {"success": True, "message": "تم قطع الاتصال بنجاح"}

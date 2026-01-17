@@ -1056,7 +1056,7 @@ async def get_crm_entry(
     return {"success": True, "entry": CRMEntry(**entry)}
 
 
-@app.get("/api/user/info", tags=["Authentication"])
+@app.get("/api/auth/me", tags=["Authentication"])
 async def get_user_info(license: dict = Depends(verify_license)):
     """
     Get current user/license information.
