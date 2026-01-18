@@ -196,7 +196,8 @@ async def get_inbox_messages(
     """
 
     # Exclude 'pending' status - only show messages after AI responds
-    query = "SELECT * FROM inbox_messages WHERE license_key_id = ? AND status != 'pending'"
+    # Also exclude soft-deleted messages
+    query = "SELECT * FROM inbox_messages WHERE license_key_id = ? AND status != 'pending' AND deleted_at IS NULL"
     params = [license_id]
 
     if status:
@@ -240,7 +241,8 @@ async def get_inbox_messages_count(
     """
     
     # Exclude 'pending' status - only count messages after AI responds
-    query = "SELECT COUNT(*) as count FROM inbox_messages WHERE license_key_id = ? AND status != 'pending'"
+    # Also exclude soft-deleted messages
+    query = "SELECT COUNT(*) as count FROM inbox_messages WHERE license_key_id = ? AND status != 'pending' AND deleted_at IS NULL"
     params = [license_id]
 
     if status:
@@ -583,6 +585,7 @@ async def get_conversation_messages(
             WHERE license_key_id = ?
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status != 'pending'
+            AND deleted_at IS NULL
             ORDER BY created_at ASC
             LIMIT ?
             """,
@@ -980,6 +983,7 @@ async def get_full_chat_history(
             WHERE license_key_id = ?
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status != 'pending'
+            AND deleted_at IS NULL
             ORDER BY created_at ASC
             LIMIT ?
             """,
@@ -1013,6 +1017,7 @@ async def get_full_chat_history(
             WHERE o.license_key_id = ?
             AND (o.recipient_email IN ({placeholders}) OR o.recipient_id IN ({placeholders}) OR o.recipient_email LIKE ?)
             AND o.status IN ('sent', 'approved')
+            AND o.deleted_at IS NULL
             ORDER BY o.created_at ASC
             LIMIT ?
             """,
@@ -1188,21 +1193,7 @@ async def edit_outbox_message(
 
 
 async def soft_delete_outbox_message(message_id: int, license_id: int) -> dict:
-    """
-    Soft delete an outbox message.
-    
-    The message is marked as deleted but kept in the database for audit purposes.
-    
-    Args:
-        message_id: ID of the message to delete
-        license_id: License ID for ownership verification
-        
-    Returns:
-        {"success": True/False, "message": str, "deleted_at": str}
-        
-    Raises:
-        ValueError: If message not found or not owned
-    """
+    """Soft delete an outbox message."""
     async with get_db() as db:
         # Check if message exists and is owned by this license
         message = await fetch_one(
@@ -1239,6 +1230,125 @@ async def soft_delete_outbox_message(message_id: int, license_id: int) -> dict:
             "message": "تم حذف الرسالة بنجاح",
             "deleted_at": now.isoformat()
         }
+
+
+async def soft_delete_message(message_id: int, license_id: int) -> dict:
+    """
+    Unified delete function. Tries to delete from outbox first, then inbox.
+    """
+    try:
+        # Try outbox first (most common for deletion)
+        return await soft_delete_outbox_message(message_id, license_id)
+    except ValueError as e:
+        # If not found in outbox, try inbox
+        if str(e) == "الرسالة غير موجودة":
+            return await soft_delete_inbox_message(message_id, license_id)
+        raise e
+
+
+async def soft_delete_inbox_message(message_id: int, license_id: int) -> dict:
+    """Soft delete an inbox message."""
+    async with get_db() as db:
+        message = await fetch_one(
+            db,
+            "SELECT id, deleted_at, sender_contact FROM inbox_messages WHERE id = ? AND license_key_id = ?",
+            [message_id, license_id]
+        )
+        
+        if not message:
+            raise ValueError("الرسالة غير موجودة")
+            
+        if message.get("deleted_at"):
+            raise ValueError("الرسالة محذوفة مسبقاً")
+            
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+        
+        await execute_sql(
+            db,
+            "UPDATE inbox_messages SET deleted_at = ? WHERE id = ? AND license_key_id = ?",
+            [ts_value, message_id, license_id]
+        )
+        await commit_db(db)
+        
+        if message.get("sender_contact"):
+            await upsert_conversation_state(license_id, message["sender_contact"])
+
+        return {
+            "success": True, 
+            "message": "تم حذف الرسالة بنجاح",
+            "deleted_at": now.isoformat()
+        }
+
+
+async def soft_delete_conversation(license_id: int, sender_contact: str) -> dict:
+    """
+    Soft delete an entire conversation (both inbox and outbox messages).
+    Then updates conversation state (which should effectively remove it).
+    """
+    from datetime import datetime, timezone
+    
+    # Handle tg: prefix similar to other functions
+    check_ids = [sender_contact]
+    if sender_contact.startswith("tg:"):
+        check_ids.append(sender_contact[3:])
+        
+    placeholders = ", ".join(["?" for _ in check_ids])
+    
+    # Params for queries
+    # For inbox: sender_contact/id
+    in_params = [license_id]
+    in_params.extend(check_ids)
+    in_params.extend(check_ids)
+    in_params.append(f"%{sender_contact}%")
+    
+    # For outbox: recipient_email/id
+    out_params = [license_id]
+    out_params.extend(check_ids)
+    out_params.extend(check_ids)
+    out_params.append(f"%{sender_contact}%")
+    
+    now = datetime.now(timezone.utc)
+    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
+    
+    # Add timestamp to params
+    in_params.insert(0, ts_value) # UPDATE ... SET deleted_at = ? WHERE ...
+    out_params.insert(0, ts_value)
+
+    async with get_db() as db:
+        # Update Inbox
+        await execute_sql(
+            db,
+            f"""
+            UPDATE inbox_messages 
+            SET deleted_at = ?
+            WHERE license_key_id = ?
+            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+            AND deleted_at IS NULL
+            """,
+            in_params
+        )
+        
+        # Update Outbox
+        await execute_sql(
+            db,
+            f"""
+            UPDATE outbox_messages 
+            SET deleted_at = ?
+            WHERE license_key_id = ?
+            AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?)
+             AND deleted_at IS NULL
+            """,
+            out_params
+        )
+        
+        await commit_db(db)
+        
+    # Update state - this will see 0 messages and delete the conversation row
+    await upsert_conversation_state(license_id, sender_contact)
+    
+    return {"success": True, "message": "تم حذف المحادثة بنجاح"}
 
 
 async def restore_deleted_message(message_id: int, license_id: int) -> dict:
@@ -1515,7 +1625,9 @@ async def upsert_conversation_state(
             SELECT COUNT(*) as count FROM inbox_messages 
             WHERE license_key_id = ? 
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status = 'analyzed' 
+            AND deleted_at IS NULL
             AND ({unread_conditions})
         """, unread_params)
         unread_count = row_unread["count"] if row_unread else 0
@@ -1532,6 +1644,7 @@ async def upsert_conversation_state(
             WHERE license_key_id = ? 
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status != 'pending'
+            AND deleted_at IS NULL
         """, total_params)
         message_count = row_count["count"] if row_count else 0
         
@@ -1544,8 +1657,10 @@ async def upsert_conversation_state(
             FROM inbox_messages 
             WHERE license_key_id = ? 
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status != 'pending'
-            ORDER BY created_at DESC LIMIT 1
+            AND deleted_at IS NULL
+            ORDER BY created_at ASC LIMIT 1
         """, total_params)
         
         # Outbox params
@@ -1559,6 +1674,7 @@ async def upsert_conversation_state(
             FROM outbox_messages 
             WHERE license_key_id = ? 
             AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?) 
+            AND deleted_at IS NULL
             ORDER BY created_at DESC LIMIT 1
         """, out_params)
         

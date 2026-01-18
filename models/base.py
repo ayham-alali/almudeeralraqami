@@ -128,6 +128,7 @@ async def init_enhanced_tables():
                 ai_draft_response TEXT,
                 status TEXT DEFAULT 'pending',
                 processed_at TIMESTAMP,
+                deleted_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
@@ -223,6 +224,14 @@ async def init_enhanced_tables():
         try:
             await execute_sql(db, """
                 ALTER TABLE outbox_messages ADD COLUMN deleted_at TIMESTAMP
+            """)
+        except:
+            pass
+
+        # Migration for inbox_messages deleted_at
+        try:
+            await execute_sql(db, """
+                ALTER TABLE inbox_messages ADD COLUMN deleted_at TIMESTAMP
             """)
         except:
             pass

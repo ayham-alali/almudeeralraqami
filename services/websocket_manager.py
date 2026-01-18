@@ -423,3 +423,14 @@ async def broadcast_message_deleted(license_id: int, message_id: int):
             "message_id": message_id
         }
     ))
+
+
+async def broadcast_conversation_deleted(license_id: int, sender_contact: str):
+    """Broadcast when a full conversation is deleted"""
+    manager = get_websocket_manager()
+    await manager.send_to_license(license_id, WebSocketMessage(
+        event="conversation_deleted",
+        data={
+            "sender_contact": sender_contact
+        }
+    ))
