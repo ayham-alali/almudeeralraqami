@@ -133,74 +133,8 @@ async def ensure_chat_features_schema():
             except Exception as e:
                 if "duplicate" not in str(e).lower() and "already exists" not in str(e).lower():
                     logger.debug(f"Delivery column {col_name}: {e}")
-        
+        await commit_db(db)
         logger.info("✅ Delivery receipt columns verified")
-        
-        # ============ 5. Presence Tracking Table ============
-        if DB_TYPE == "postgresql":
-            await execute_sql(db, """
-                CREATE TABLE IF NOT EXISTS user_presence (
-                    id SERIAL PRIMARY KEY,
-                    license_id INTEGER NOT NULL UNIQUE,
-                    is_online BOOLEAN DEFAULT FALSE,
-                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-        else:
-            await execute_sql(db, """
-                CREATE TABLE IF NOT EXISTS user_presence (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    license_id INTEGER NOT NULL UNIQUE,
-                    is_online INTEGER DEFAULT 0,
-                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-        
-        await commit_db(db)
-        logger.info("✅ user_presence table verified")
-        
-        # ============ 5. Customer Presence Table (Real Last Seen from WhatsApp/Telegram) ============
-        if DB_TYPE == "postgresql":
-            await execute_sql(db, """
-                CREATE TABLE IF NOT EXISTS customer_presence (
-                    id SERIAL PRIMARY KEY,
-                    license_id INTEGER NOT NULL,
-                    sender_contact VARCHAR(255) NOT NULL,
-                    channel VARCHAR(50),
-                    is_online BOOLEAN DEFAULT FALSE,
-                    last_seen TIMESTAMP,
-                    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(license_id, sender_contact)
-                )
-            """)
-            await execute_sql(db, """
-                CREATE INDEX IF NOT EXISTS idx_customer_presence_contact 
-                ON customer_presence(license_id, sender_contact)
-            """)
-        else:
-            await execute_sql(db, """
-                CREATE TABLE IF NOT EXISTS customer_presence (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    license_id INTEGER NOT NULL,
-                    sender_contact TEXT NOT NULL,
-                    channel TEXT,
-                    is_online INTEGER DEFAULT 0,
-                    last_seen TIMESTAMP,
-                    last_activity TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(license_id, sender_contact)
-                )
-            """)
-            await execute_sql(db, """
-                CREATE INDEX IF NOT EXISTS idx_customer_presence_contact 
-                ON customer_presence(license_id, sender_contact)
-            """)
-        
-        await commit_db(db)
-        logger.info("✅ customer_presence table verified")
         
         logger.info("🎉 All chat features schema changes applied successfully!")
 

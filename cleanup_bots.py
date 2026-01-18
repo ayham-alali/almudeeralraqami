@@ -102,8 +102,6 @@ async def cleanup_bots():
             await execute_sql(db, "DELETE FROM inbox_messages WHERE sender_contact = ?", [contact])
             deleted_messages += len(msg_ids)
             
-            # Delete presence
-            await execute_sql(db, "DELETE FROM customer_presence WHERE sender_contact = ?", [contact])
             
             # Clean up purchases if any (optional but good for referential integrity if cascade isn't set)
             await execute_sql(db, "DELETE FROM purchases WHERE customer_id IN (SELECT id FROM customers WHERE phone = ? OR email = ?)", [contact, contact])

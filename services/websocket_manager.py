@@ -366,18 +366,6 @@ async def broadcast_task_complete(license_id: int, task_id: str, result: Dict[st
     ))
 
 
-# ============ Presence Broadcasting ============
-
-async def broadcast_presence_update(license_id: int, is_online: bool, last_seen: str = None):
-    """Broadcast presence status change to connected clients"""
-    manager = get_websocket_manager()
-    await manager.send_to_license(license_id, WebSocketMessage(
-        event="presence_update",
-        data={
-            "is_online": is_online,
-            "last_seen": last_seen
-        }
-    ))
 
 
 

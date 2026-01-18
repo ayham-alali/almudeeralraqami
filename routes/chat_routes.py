@@ -289,19 +289,6 @@ async def remove_reaction_route(message_id: int, emoji: str, license: dict = Dep
         return result
     raise HTTPException(status_code=500, detail="فشل إزالة التفاعل")
 
-# --- Presence ---
-
-@router.get("/presence/{contact_id:path}")
-async def get_presence_route(contact_id: str, license: dict = Depends(get_license_from_header)):
-    from services.customer_presence import get_customer_presence
-    presence = await get_customer_presence(license["license_id"], contact_id)
-    return {**presence, "contact_id": contact_id}
-
-@router.post("/presence/heartbeat")
-async def presence_heartbeat_route(license: dict = Depends(get_license_from_header)):
-    from models.presence import heartbeat
-    await heartbeat(license["license_id"])
-    return {"success": True}
 
 # --- Internal Background Tasks Implementation (Original core_integrations.py logic) ---
 

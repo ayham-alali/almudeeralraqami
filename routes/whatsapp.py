@@ -15,7 +15,6 @@ from services.whatsapp_service import (
     delete_whatsapp_config,
 )
 from models import save_inbox_message, create_smart_notification
-from services.customer_presence import update_customer_presence
 from security import sanitize_phone, sanitize_string, sanitize_message
 from dependencies import get_license_from_header
 
@@ -366,14 +365,6 @@ async def receive_webhook(request: Request):
                         attachments=attachments
                     )
 
-                    # Update Customer Presence (New Message)
-                    await update_customer_presence(
-                        license_id=license_id,
-                        sender_contact=msg.get("sender_phone", msg.get("from")),
-                        channel="whatsapp",
-                        is_online=True,
-                        last_activity=datetime.fromtimestamp(int(msg.get("timestamp"))) if msg.get("timestamp") else datetime.now()
-                    )
 
                     # Analyze with AI (WhatsApp auto-analysis)
                     try:

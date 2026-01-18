@@ -410,9 +410,6 @@ app.include_router(reactions_router)       # Message Reactions
 from routes.auth import router as auth_router
 app.include_router(auth_router)
 
-# Presence routes
-from routes.presence import router as presence_router
-app.include_router(presence_router)
 
 # Voice message routes
 try:

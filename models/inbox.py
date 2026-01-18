@@ -106,18 +106,6 @@ async def save_inbox_message(
         
         message_id = row["id"] if row else 0
         
-        # Update customer presence - mark them as "online" when they send a message
-        try:
-            from services.customer_presence import mark_customer_online
-            if sender_contact:
-                await mark_customer_online(
-                    license_id=license_id,
-                    sender_contact=sender_contact,
-                    channel=channel
-                )
-        except Exception as e:
-            # Non-critical, don't fail the message save
-            pass
         
         # Call upsert to update conversation state
         # We do this asynchronously/fire-and-forget or await it? 
@@ -440,11 +428,7 @@ async def get_inbox_conversations(
             last_message_at as created_at,
             ic.status,
             unread_count,
-            message_count,
-            cp.is_online,
-            cp.last_seen
         FROM inbox_conversations ic
-        LEFT JOIN customer_presence cp ON cp.license_id = ic.license_key_id AND cp.sender_contact = ic.sender_contact
         WHERE {where_sql}
         ORDER BY ic.updated_at DESC
         LIMIT ? OFFSET ?
