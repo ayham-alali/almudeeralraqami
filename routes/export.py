@@ -283,7 +283,7 @@ def generate_html_report(data: dict, license_name: str = "شركتك") -> str:
     </div>
     
     <div class="footer">
-        <p>تم إنشاء هذا التقرير بواسطة المدير - {datetime.now().strftime('%Y-%m-%d %H:%M')}</p>
+        <p>تم إنشاء هذا التقرير بواسطة المدير - {datetime.now().strftime('%Y-%m-%d %I:%M %p')}</p>
     </div>
 </body>
 </html>
