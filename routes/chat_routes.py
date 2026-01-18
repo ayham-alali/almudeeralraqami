@@ -97,6 +97,13 @@ async def get_conversations_route(
     status_counts = await get_inbox_status_counts(license["license_id"])
     return {"conversations": conversations, "total": total, "status_counts": status_counts}
 
+@router.get("/conversations/stats")
+async def get_conversations_stats(
+    license: dict = Depends(get_license_from_header)
+):
+    """Lightweight endpoint for fetching unread counts"""
+    return await get_inbox_status_counts(license["license_id"])
+
 @router.get("/conversations/search")
 async def search_user_messages(
     query: str,

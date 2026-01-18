@@ -753,162 +753,144 @@ async def process_message_notifications(
     license_id: int,
     message_data: dict,
     message_id: Optional[int] = None
-) -> List[dict]:
+):
     """
     Process incoming message and trigger appropriate notifications
     based on configured rules.
-    If message_id is provided, avoids duplicate triggers.
+    Standardized flow: Deduplicate -> Fetch Rules -> Evaluate -> Dispatch -> Log
     """
+    from logging_config import get_logger
+    logger = get_logger(__name__)
+    
+    sender_contact = message_data.get("sender_contact")
+
+    # 1. Deduplication (Same message ID processed recently?)
+    # This prevents loops if both "polling" and "analysis" try to notify
     if message_id:
-        from db_helper import get_db, fetch_one
-        from datetime import datetime, timedelta
-        async with get_db() as db:
-            # Check if we already sent a notification for this message ID in the last 5 minutes
-            # (to avoid loops or double triggers from analysis vs polling)
-            existing = await fetch_one(
-                db,
-                "SELECT id FROM notification_log WHERE license_key_id = ? AND message_id = ? AND created_at > ?",
-                [license_id, message_id, (datetime.utcnow() - timedelta(minutes=5))]
-            )
-            if existing:
-                return []
-    
-    notifications_sent = []
-    
-    # Get all active rules
-    rules = await get_rules(license_id)
-    
-    # Collect all matching rules first
+        try:
+            from db_helper import get_db, fetch_one
+            from datetime import datetime, timedelta
+            async with get_db() as db:
+                existing = await fetch_one(
+                    db,
+                    "SELECT id FROM notification_log WHERE license_key_id = ? AND message_id = ? AND created_at > ?",
+                    [license_id, message_id, (datetime.utcnow() - timedelta(minutes=5))]
+                )
+                if existing:
+                    logger.info(f"Skipping duplicate notification processing for msg {message_id}")
+                    return []
+        except Exception as e:
+            logger.warning(f"Deduplication check failed: {e}")
+
+    # 2. Fetch Rules
+    try:
+        rules = await get_rules(license_id)
+        if not rules:
+            logger.info(f"No active notification rules for license {license_id}")
+            return []
+    except Exception as e:
+        logger.error(f"Failed to fetch rules for license {license_id}: {e}")
+        return []
+
+    # 3. Evaluate Rules
     matched_rules = []
+    
+    # Context for rule evaluation
+    context = {
+        "intent": message_data.get("intent", "").lower(),
+        "urgency": message_data.get("urgency", "عادي"),
+        "sentiment": message_data.get("sentiment", "محايد"),
+        "body": message_data.get("body", "").lower(),
+        "channel": message_data.get("channel", ""),
+        "sender": message_data.get("sender_name", ""),
+    }
+    
+    logger.info(f"Evaluating notifications for msg {message_id} | Context: {context}")
 
     for rule in rules:
-        should_trigger = False
+        is_match = False
+        match_reason = ""
         
         # Check rule condition
         if rule["condition_type"] == "sentiment":
-            if rule["condition_value"] == "negative" and message_data.get("sentiment") == "سلبي":
-                should_trigger = True
+            if rule["condition_value"] == "negative" and context["sentiment"] == "سلبي":
+                is_match = True
+                match_reason = "Sentiment: Negative"
         
         elif rule["condition_type"] == "urgency":
-            if rule["condition_value"] == "urgent" and message_data.get("urgency") == "عاجل":
-                should_trigger = True
+            if rule["condition_value"] == "urgent" and context["urgency"] == "عاجل":
+                is_match = True
+                match_reason = "Urgency: High"
         
         elif rule["condition_type"] == "keyword":
             keywords = rule["condition_value"].split(",")
-            message_text = (message_data.get("body", "") + " " + message_data.get("subject", "")).lower()
-            if any(kw.strip().lower() in message_text for kw in keywords):
-                should_trigger = True
-        
-        elif rule["condition_type"] == "vip_customer":
-            if message_data.get("is_vip"):
-                should_trigger = True
+            if any(kw.strip().lower() in context["body"] for kw in keywords):
+                is_match = True
+                match_reason = f"Keyword Match: {rule['condition_value']}"
 
         elif rule["condition_type"] == "waiting_for_reply":
-             # Trigger for any valid incoming message
-             should_trigger = True
-        
-        if should_trigger:
+             # This is usually a scheduled check, but if triggered here:
+             is_match = True
+             match_reason = "Always Notify (Waiting)"
+
+        if is_match:
+            logger.info(f"Rule Matched: {rule['name']} ({rule['id']}) | Reason: {match_reason}")
             matched_rules.append(rule)
-            
+
     if not matched_rules:
+        logger.info(f"No rules matched for msg {message_id}. Skipping notification.")
         return []
 
-    # === Deduplication Logic ===
-    # 1. Separate generic vs specific rules
-    specific_rules = [r for r in matched_rules if r["condition_type"] != "waiting_for_reply"]
-    generic_rules = [r for r in matched_rules if r["condition_type"] == "waiting_for_reply"]
-    
-    final_rule = None
-    
-    # 2. If we have ANY specific rule, ignore the generic "waiting_for_reply"
-    if specific_rules:
-        # 3. If multiple specific rules, prioritize by type (Urgency > Sentiment > VIP > Keyword)
-        # We can implement a simple priority map
-        priority_map = {
-            "urgency": 100,
-            "sentiment": 90,
-            "vip_customer": 80,
-            "keyword": 70
-        }
-        # Sort by priority desc
-        specific_rules.sort(key=lambda x: priority_map.get(x["condition_type"], 0), reverse=True)
-        final_rule = specific_rules[0]
-    elif generic_rules:
-        # Only generic matched
-        final_rule = generic_rules[0]
-        
-    if final_rule:
-        # Standard WhatsApp-style notification
-        # Title: Sender Name
-        # Body: Message Preview
-        sender_name = message_data.get('sender_name', 'New Message')
-        
-        # Handle empty/media body
-        body_text = message_data.get('body', '')
-        if not body_text or len(body_text.strip()) == 0:
-            attachments = message_data.get("attachments", [])
-            if attachments:
-                first_type = str(attachments[0].get("type", "")).lower()
-                if "image" in first_type:
-                    body_text = "📷 صورة"
-                elif "video" in first_type:
-                    body_text = "🎥 فيديو"
-                elif "audio" in first_type or "voice" in first_type:
-                    body_text = "🎤 رسالة صوتية"
-                else:
-                    body_text = "📎 ملف"
-            else:
-                body_text = "رسالة جديدة"
-        
-        body_preview = body_text[:100]
-        
-        # Try to get profile picture
-        profile_pic = None
-        sender_contact = message_data.get("sender_contact") or message_data.get("sender_id")
-        
-        if sender_contact:
+    # 4. Aggregate Channels
+    # Avoid sending duplicate notifications if multiple rules trigger same channel
+    channels_to_notify = set()
+    for rule in matched_rules:
+        for ch in rule.get("channels", []):
             try:
-                from models.customers import get_or_create_customer
-                # We use get_or_create just to be safe and get the record, 
-                # but typically it should exist if they messaged us
-                customer = await get_or_create_customer(
-                    license_id=license_id,
-                    phone=sender_contact if "@" not in str(sender_contact) else None,
-                    email=sender_contact if "@" in str(sender_contact) else None,
-                    name=sender_name
-                )
-                if customer:
-                    profile_pic = customer.get("profile_pic_url")
-            except Exception as e:
-                # Don't fail notification if customer fetch fails
-                pass
+                channels_to_notify.add(NotificationChannel(ch))
+            except ValueError:
+                pass # Ignore invalid channels
 
-        payload = NotificationPayload(
-            title=sender_name,
-            message=body_preview,
-            priority=NotificationPriority.NORMAL, # Always normal priority as requested
-            link=f"/dashboard/inbox",
-            metadata={
-                "sender": sender_name,
-                "channel": message_data.get("channel", "-"),
-                "type": "message",
-                "message_id": message_id
-            },
-            image=profile_pic
+    # Default fallback: If rules matched but no valid channels, force IN_APP
+    if not channels_to_notify:
+        channels_to_notify.add(NotificationChannel.IN_APP)
+
+    logger.info(f"Dispatching to channels: {[c.value for c in channels_to_notify]}")
+
+    # 5. Build Payload
+    priority = NotificationPriority.NORMAL
+    if any(r["condition_type"] == "urgency" for r in matched_rules):
+        priority = NotificationPriority.HIGH
+    if any(r["condition_type"] == "sentiment" and r["condition_value"]=="negative" for r in matched_rules):
+        priority = NotificationPriority.HIGH
+
+    payload = NotificationPayload(
+        title=f"رسالة جديدة: {context['sender']}",
+        message=message_data.get("body", "")[:150],
+        priority=priority,
+        link=f"/inbox/{message_id}" if message_id else "/inbox",
+        metadata={
+            "message_id": message_id,
+            "sender_contact": sender_contact,
+            "matched_rules": ",".join([str(r["id"]) for r in matched_rules])
+        }
+    )
+
+    # 6. Dispatch
+    try:
+        result = await send_notification(
+            license_id, 
+            payload, 
+            channels=list(channels_to_notify)
         )
+        logger.info(f"Notification dispatch result: {result}")
+        return [result]
+    except Exception as e:
+        logger.error(f"Failed to dispatch notifications: {e}")
+        return []
         
-        channels = [
-            NotificationChannel(ch) for ch in final_rule["channels"]
-            if ch in [e.value for e in NotificationChannel]
-        ]
-        
-        result = await send_notification(license_id, payload, channels)
-        notifications_sent.append({
-            "rule": final_rule["name"],
-            "result": result
-        })
-    
-    return notifications_sent
+
+
 
 
 # ============ Predefined Alert Types ============
