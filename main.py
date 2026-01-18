@@ -24,7 +24,7 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -510,6 +510,12 @@ async def verify_license(x_license_key: str = Header(None, alias="X-License-Key"
 
 
 # ============ Public Routes ============
+
+@app.get("/robots.txt", response_class=PlainTextResponse)
+async def robots_txt():
+    """Robots.txt for crawlers"""
+    return "User-agent: *\nDisallow: /"
+
 
 @app.get("/", response_model=HealthCheck)
 async def root():
