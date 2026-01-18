@@ -560,18 +560,33 @@ async def get_conversation_messages(
     NOTE: Excludes 'pending' status messages - only shows messages after AI responds.
     """
     # Handle the tg: prefix for telegram user IDs
+    # Handle tg: prefix for telegram user IDs
+    check_ids = [sender_contact]
+    if sender_contact.startswith("tg:"):
+        check_ids.append(sender_contact[3:])  # Add ID without tg: prefix
+
+    # Create placeholders for OR condition
+    # (sender_contact IN (?, ?) OR sender_id IN (?, ?) OR sender_contact LIKE ?)
+    placeholders = ", ".join(["?" for _ in check_ids])
+    
+    params = [license_id]
+    params.extend(check_ids) # For sender_contact IN
+    params.extend(check_ids) # For sender_id IN
+    params.append(f"%{sender_contact}%") # For LIKE
+    params.append(limit)
+
     async with get_db() as db:
         rows = await fetch_all(
             db,
-            """
+            f"""
             SELECT * FROM inbox_messages
             WHERE license_key_id = ?
-            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status != 'pending'
             ORDER BY created_at ASC
             LIMIT ?
             """,
-            [license_id, sender_contact, sender_contact, f"%{sender_contact}%", limit]
+            params
         )
         return rows
 
@@ -618,51 +633,64 @@ async def get_conversation_messages_cursor(
         except Exception:
             pass  # Invalid cursor, start from beginning
     
+    # Handle tg: prefix
+    check_ids = [sender_contact]
+    if sender_contact.startswith("tg:"):
+        check_ids.append(sender_contact[3:])
+        
+    placeholders = ", ".join(["?" for _ in check_ids])
+    
     async with get_db() as db:
         # Build query based on direction
         if direction == "older":
             # For scrolling up (loading older messages)
             if cursor_created_at and cursor_id:
-                query = """
+                query = f"""
                     SELECT * FROM inbox_messages
                     WHERE license_key_id = ?
-                    AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+                    AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
                     AND status != 'pending'
                     AND (created_at < ? OR (created_at = ? AND id < ?))
                     ORDER BY created_at DESC, id DESC
                     LIMIT ?
                 """
-                params = [
-                    license_id, sender_contact, sender_contact, f"%{sender_contact}%",
-                    cursor_created_at, cursor_created_at, cursor_id, limit + 1
-                ]
+                params = [license_id]
+                params.extend(check_ids)
+                params.extend(check_ids)
+                params.append(f"%{sender_contact}%")
+                params.extend([cursor_created_at, cursor_created_at, cursor_id, limit + 1])
             else:
                 # No cursor - get newest messages first (bottom of chat)
-                query = """
+                query = f"""
                     SELECT * FROM inbox_messages
                     WHERE license_key_id = ?
-                    AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+                    AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
                     AND status != 'pending'
                     ORDER BY created_at DESC, id DESC
                     LIMIT ?
                 """
-                params = [license_id, sender_contact, sender_contact, f"%{sender_contact}%", limit + 1]
+                params = [license_id]
+                params.extend(check_ids)
+                params.extend(check_ids)
+                params.append(f"%{sender_contact}%")
+                params.append(limit + 1)
         else:
             # For loading newer messages (real-time updates)
             if cursor_created_at and cursor_id:
-                query = """
+                query = f"""
                     SELECT * FROM inbox_messages
                     WHERE license_key_id = ?
-                    AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+                    AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
                     AND status != 'pending'
                     AND (created_at > ? OR (created_at = ? AND id > ?))
                     ORDER BY created_at ASC, id ASC
                     LIMIT ?
                 """
-                params = [
-                    license_id, sender_contact, sender_contact, f"%{sender_contact}%",
-                    cursor_created_at, cursor_created_at, cursor_id, limit + 1
-                ]
+                params = [license_id]
+                params.extend(check_ids)
+                params.extend(check_ids)
+                params.append(f"%{sender_contact}%")
+                params.extend([cursor_created_at, cursor_created_at, cursor_id, limit + 1])
             else:
                 # No cursor for newer - return empty (must provide cursor)
                 return {"messages": [], "next_cursor": None, "has_more": False}
@@ -922,9 +950,26 @@ async def get_full_chat_history(
     async with get_db() as db:
         # Get incoming messages (from client to us)
         # NOTE: Exclude 'pending' status - only show messages after AI responds
+        # Handle tg: prefix
+        check_ids = [sender_contact]
+        if sender_contact.startswith("tg:"):
+            check_ids.append(sender_contact[3:])
+            
+        placeholders = ", ".join(["?" for _ in check_ids])
+        
+        # Get incoming messages (from client to us)
+        # NOTE: Exclude 'pending' status - only show messages after AI responds
+        
+        # Build params
+        params = [license_id]
+        params.extend(check_ids) # sender_contact IN
+        params.extend(check_ids) # sender_id IN
+        params.append(f"%{sender_contact}%") # LIKE
+        params.append(limit)
+        
         inbox_rows = await fetch_all(
             db,
-            """
+            f"""
             SELECT 
                 id, channel, sender_name, sender_contact, sender_id, 
                 subject, body, 
@@ -933,19 +978,30 @@ async def get_full_chat_history(
                 created_at, received_at
             FROM inbox_messages
             WHERE license_key_id = ?
-            AND (sender_contact = ? OR sender_id = ? OR sender_contact LIKE ?)
+            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status != 'pending'
             ORDER BY created_at ASC
             LIMIT ?
             """,
-            [license_id, sender_contact, sender_contact, f"%{sender_contact}%", limit]
+            params
         )
         
         # Get outgoing messages (from us to client) - sent replies
         # Include delivery_status for real receipt display
+        # Get outgoing messages (from us to client) - sent replies
+        # Include delivery_status for real receipt display
+        
+        # Build params for outbox
+        # Outbox checks recipient_email or recipient_id
+        out_params = [license_id]
+        out_params.extend(check_ids) # recipient_email IN
+        out_params.extend(check_ids) # recipient_id IN
+        out_params.append(f"%{sender_contact}%") # LIKE
+        out_params.append(limit)
+        
         outbox_rows = await fetch_all(
             db,
-            """
+            f"""
             SELECT 
                 o.id, o.channel, o.recipient_email as sender_contact, o.recipient_id as sender_id,
                 o.subject, o.body, o.status,
@@ -955,12 +1011,12 @@ async def get_full_chat_history(
             FROM outbox_messages o
             LEFT JOIN inbox_messages i ON o.inbox_message_id = i.id
             WHERE o.license_key_id = ?
-            AND (o.recipient_email = ? OR o.recipient_id = ? OR o.recipient_email LIKE ?)
+            AND (o.recipient_email IN ({placeholders}) OR o.recipient_id IN ({placeholders}) OR o.recipient_email LIKE ?)
             AND o.status IN ('sent', 'approved')
             ORDER BY o.created_at ASC
             LIMIT ?
             """,
-            [license_id, sender_contact, sender_contact, f"%{sender_contact}%", limit]
+            out_params
         )
         
         # Convert to list with direction marker
@@ -1437,44 +1493,74 @@ async def upsert_conversation_state(
         # Unread count: incoming messages that are analyzed but not read
         # Message count: all non-pending messages
         
+        # Handle tg: prefix for accurate counts
+        check_ids = [sender_contact]
+        if sender_contact.startswith("tg:"):
+            check_ids.append(sender_contact[3:])
+            
+        placeholders = ", ".join(["?" for _ in check_ids])
+    
         # Calculate Unread Count
         unread_conditions = "is_read = 0 OR is_read IS NULL"
         if DB_TYPE == "postgresql":
             unread_conditions = "is_read IS FALSE OR is_read IS NULL"
             
+        # Params for unread
+        unread_params = [license_id]
+        unread_params.extend(check_ids) # sender_contact IN
+        unread_params.extend(check_ids) # sender_id IN
+        unread_params.append(f"%{sender_contact}%") # LIKE
+        
         row_unread = await fetch_one(db, f"""
             SELECT COUNT(*) as count FROM inbox_messages 
-            WHERE license_key_id = ? AND sender_contact = ? 
+            WHERE license_key_id = ? 
+            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status = 'analyzed' 
             AND ({unread_conditions})
-        """, [license_id, sender_contact])
+        """, unread_params)
         unread_count = row_unread["count"] if row_unread else 0
         
         # Calculate Total Message Count (excluding pending)
-        row_count = await fetch_one(db, """
+        # Params for total
+        total_params = [license_id]
+        total_params.extend(check_ids)
+        total_params.extend(check_ids)
+        total_params.append(f"%{sender_contact}%")
+        
+        row_count = await fetch_one(db, f"""
             SELECT COUNT(*) as count FROM inbox_messages 
-            WHERE license_key_id = ? AND sender_contact = ? 
+            WHERE license_key_id = ? 
+            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status != 'pending'
-        """, [license_id, sender_contact])
+        """, total_params)
         message_count = row_count["count"] if row_count else 0
         
         # 2. Get Last Message (Source of Truth)
         # Could be Inbox OR Outbox. We need the absolute latest.
         # Efficient querying: Get latest from each, compare.
         
-        latest_inbox = await fetch_one(db, """
+        latest_inbox = await fetch_one(db, f"""
             SELECT id, body, received_at as created_at, status 
             FROM inbox_messages 
-            WHERE license_key_id = ? AND sender_contact = ? AND status != 'pending'
+            WHERE license_key_id = ? 
+            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
+            AND status != 'pending'
             ORDER BY created_at DESC LIMIT 1
-        """, [license_id, sender_contact])
+        """, total_params)
         
-        latest_outbox = await fetch_one(db, """
+        # Outbox params
+        out_params = [license_id]
+        out_params.extend(check_ids) # recipient_email IN
+        out_params.extend(check_ids) # recipient_id IN
+        out_params.append(f"%{sender_contact}%") # LIKE
+
+        latest_outbox = await fetch_one(db, f"""
             SELECT id, body, created_at, status 
             FROM outbox_messages 
-            WHERE license_key_id = ? AND (recipient_email = ? OR recipient_id = ?) 
+            WHERE license_key_id = ? 
+            AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?) 
             ORDER BY created_at DESC LIMIT 1
-        """, [license_id, sender_contact, sender_contact])
+        """, out_params)
         
         # Determine winner
         last_message = None
@@ -1514,7 +1600,15 @@ async def upsert_conversation_state(
              last_message_at = last_outbox_time
         
         if not last_message:
-            # No valid messages? (Maybe all pending). Skip update.
+            # No valid messages? (Maybe all pending or deleted).
+            # Clean up empty conversation entry to prevent ghost chats.
+            # NOTE: We only delete if there are truly no messages left.
+            if message_count == 0:
+                await execute_sql(
+                    db, 
+                    "DELETE FROM inbox_conversations WHERE license_key_id = ? AND sender_contact = ?", 
+                    [license_id, sender_contact]
+                )
             return
 
         status = last_message["status"]

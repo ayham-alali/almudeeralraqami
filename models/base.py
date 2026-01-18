@@ -147,6 +147,7 @@ async def init_enhanced_tables():
                 status TEXT DEFAULT 'pending',
                 approved_at TIMESTAMP,
                 sent_at TIMESTAMP,
+                deleted_at TIMESTAMP,
                 error_message TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (inbox_message_id) REFERENCES inbox_messages(id),
@@ -214,6 +215,14 @@ async def init_enhanced_tables():
         try:
             await execute_sql(db, """
                 ALTER TABLE telegram_phone_sessions ADD COLUMN auto_reply_enabled BOOLEAN DEFAULT FALSE
+            """)
+        except:
+            pass
+            
+        # Migration for outbox_messages deleted_at
+        try:
+            await execute_sql(db, """
+                ALTER TABLE outbox_messages ADD COLUMN deleted_at TIMESTAMP
             """)
         except:
             pass

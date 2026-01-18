@@ -129,9 +129,25 @@ async def init_notification_tables():
 
         # Migration: Ensure message_id column exists for existing tables
         try:
-            # Check if column exists
-            columns = await fetch_all(db, "PRAGMA table_info(notification_log)", [])
-            has_message_id = any(col["name"] == "message_id" for col in columns)
+            from db_helper import DB_TYPE
+            has_message_id = False
+            
+            if DB_TYPE == "postgresql":
+                # PostgreSQL check
+                row = await fetch_one(
+                    db, 
+                    """
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name='notification_log' AND column_name='message_id'
+                    """,
+                    []
+                )
+                has_message_id = bool(row)
+            else:
+                # SQLite check
+                columns = await fetch_all(db, "PRAGMA table_info(notification_log)", [])
+                has_message_id = any(col["name"] == "message_id" for col in columns)
             
             if not has_message_id:
                 print("Migrating notification_log: adding message_id column...")
