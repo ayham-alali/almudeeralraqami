@@ -282,11 +282,7 @@ class PreferencesUpdate(BaseModel):
     # AI / Tone Settings
     tone: Optional[str] = None
     custom_tone_guidelines: Optional[str] = None
-    business_name: Optional[str] = None
-    industry: Optional[str] = None
-    products_services: Optional[str] = None
     preferred_languages: Optional[Union[str, List[str]]] = None
-    reply_length: Optional[str] = None
     formality_level: Optional[str] = None
 
 

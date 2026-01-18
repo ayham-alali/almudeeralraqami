@@ -80,15 +80,8 @@ def build_system_prompt(preferences: Optional[Dict[str, Any]] = None) -> str:
         # formal or unknown
         tone_desc = "استخدم نبرة رسمية بسيطة وواضحة بدون مبالغة في المجاملات."
 
-    business_name = preferences.get("business_name") or "الشركة"
-    industry = preferences.get("industry") or ""
-    products = preferences.get("products_services") or ""
-
+    business_name = (preferences or {}).get("business_name") or "الشركة"
     business_context_parts = [f"تتحدث باسم {business_name}."]
-    if industry:
-        business_context_parts.append(f"النشاط الرئيسي: {industry}.")
-    if products:
-        business_context_parts.append(f"الخدمات / المنتجات الأساسية: {products}.")
 
     reply_length = (preferences.get("reply_length") or "").lower()
     if reply_length == "short":

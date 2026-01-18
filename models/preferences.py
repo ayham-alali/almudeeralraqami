@@ -73,9 +73,6 @@ async def get_preferences(license_id: int) -> dict:
             "onboarding_completed": False,
             "tone": "formal",
             "custom_tone_guidelines": None,
-            "business_name": None,
-            "industry": None,
-            "products_services": None,
             "preferred_languages": ["ar"], # Return list directly
             "reply_length": None,
             "formality_level": None,
@@ -96,9 +93,6 @@ async def update_preferences(license_id: int, **kwargs) -> bool:
         # AI / workspace tone & business profile
         'tone',
         'custom_tone_guidelines',
-        'business_name',
-        'industry',
-        'products_services',
         'preferred_languages',
         'reply_length',
         'formality_level',
