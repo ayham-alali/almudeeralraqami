@@ -255,9 +255,12 @@ async def edit_message_route(message_id: int, request: Request, license: dict = 
 async def delete_message_route(message_id: int, license: dict = Depends(get_license_from_header)):
     from models.inbox import soft_delete_outbox_message
     from services.websocket_manager import broadcast_message_deleted
-    result = await soft_delete_outbox_message(message_id, license["license_id"])
-    await broadcast_message_deleted(license["license_id"], message_id)
-    return result
+    try:
+        result = await soft_delete_outbox_message(message_id, license["license_id"])
+        await broadcast_message_deleted(license["license_id"], message_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 # --- Reactions ---
 

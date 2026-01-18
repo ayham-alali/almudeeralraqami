@@ -1151,7 +1151,7 @@ async def soft_delete_outbox_message(message_id: int, license_id: int) -> dict:
         # Check if message exists and is owned by this license
         message = await fetch_one(
             db,
-            "SELECT id, deleted_at FROM outbox_messages WHERE id = ? AND license_key_id = ?",
+            "SELECT id, deleted_at, recipient_email, recipient_id FROM outbox_messages WHERE id = ? AND license_key_id = ?",
             [message_id, license_id]
         )
         

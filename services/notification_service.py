@@ -121,10 +121,26 @@ async def init_notification_tables():
                 status TEXT DEFAULT 'sent',
                 error_message TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                message_id INTEGER,
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
             """,
         )
+
+        # Migration: Ensure message_id column exists for existing tables
+        try:
+            # Check if column exists
+            columns = await fetch_all(db, "PRAGMA table_info(notification_log)", [])
+            has_message_id = any(col["name"] == "message_id" for col in columns)
+            
+            if not has_message_id:
+                print("Migrating notification_log: adding message_id column...")
+                await execute_sql(
+                    db,
+                    "ALTER TABLE notification_log ADD COLUMN message_id INTEGER"
+                )
+        except Exception as e:
+            print(f"Warning checking/migrating notification_log schema: {e}")
 
         # Notification analytics table for delivery/open tracking
         await execute_sql(
