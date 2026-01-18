@@ -7,6 +7,7 @@ import re
 import asyncio
 from typing import List, Optional
 import httpx
+from httpx import HTTPStatusError
 from bs4 import BeautifulSoup
 from logging_config import get_logger
 
@@ -79,6 +80,11 @@ async def extract_and_scrape_links(text: str, limit: int = 1) -> str:
                 
                 scraped_content.append(f"--- محتوى الرابط: {url} ---\nالعنوان: {title}\n\n{clean_text}\n------------------")
                 
+            except HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    logger.info(f"Skipping unreachable URL (404): {url}")
+                else:
+                    logger.warning(f"HTTP error scraping {url}: {e}")
             except Exception as e:
                 logger.warning(f"Failed to scrape {url}: {e}")
                 

@@ -207,6 +207,8 @@ async def verify_telegram_phone_code(
             user_username=user_info.get("username")
         )
         return {"success": True, "message": "تم ربط رقم Telegram بنجاح", "user": user_info}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
