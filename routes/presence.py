@@ -10,117 +10,14 @@ from pydantic import BaseModel
 
 from db_helper import get_db, fetch_one
 from dependencies import get_license_from_header
-from services.websocket_manager import broadcast_typing_indicator, broadcast_recording_indicator
+
+
 
 router = APIRouter(prefix="/api/presence", tags=["Chat Features"])
 
 
-class IndicatorRequest(BaseModel):
-    sender_contact: str
-    is_active: bool
-    channel: str = "whatsapp" # default to whatsapp if missing, or maybe generic
 
 
-@router.post("/typing")
-async def send_typing_indicator(
-    data: IndicatorRequest,
-    license: dict = Depends(get_license_from_header)
-):
-    """
-    Broadcast that an agent is typing in a conversation.
-    This informs other connected clients/UIs.
-    """
-    license_id = license.get("license_id")
-    
-    # NOTE: We do NOT broadcast to internal WebSocket here.
-    # This endpoint is for OUTGOING indicators (Agent -> External Platform).
-    # The app already knows the agent is typing; no need to echo it back.
-    # Internal WebSocket broadcasts are only for INCOMING indicators from TelegramListenerService.
-    
-    # Send to external platform
-    try:
-        if data.channel == "telegram":
-            # 1. Try Telegram Bot first (preferred/more stable)
-            try:
-                from services.telegram_service import TelegramBotManager
-                from models.telegram_config import get_telegram_bot_token
-                
-                bot_token = await get_telegram_bot_token(license_id)
-                if bot_token:
-                    bot = TelegramBotManager.get_bot(license_id, bot_token)
-                    await bot.send_typing_action(data.sender_contact)
-                    return {"success": True}
-            except Exception:
-                pass
-
-            # 2. Fallback to Telegram Phone API (User Account)
-            try:
-                import models
-                from services.telegram_phone_service import TelegramPhoneService
-                
-                session = await models.get_telegram_phone_session(license_id, data.sender_contact)
-                if session and session.session_string:
-                    service = TelegramPhoneService()
-                    await service.set_typing(
-                        session.session_string,
-                        data.sender_contact,
-                        action="typing" if data.is_active else "cancel"
-                    )
-            except Exception:
-                pass
-                
-        elif data.channel == "whatsapp":
-            from services.whatsapp_service import WhatsAppService, get_whatsapp_config
-            
-            if data.is_active: # Only send "ON", WhatsApp handles timeout automatically
-                config = await get_whatsapp_config(license_id)
-                if config and config.get("is_active"):
-                    service = WhatsAppService(
-                        phone_number_id=config["phone_number_id"],
-                        access_token=config["access_token"]
-                    )
-                    await service.send_typing_indicator(data.sender_contact)
-
-    except Exception as e:
-        # Don't fail the request if external indicator fails
-        print(f"Failed to send external typing indicator: {e}")
-
-    return {"success": True}
-
-
-@router.post("/recording")
-async def send_recording_indicator(
-    data: IndicatorRequest,
-    license: dict = Depends(get_license_from_header)
-):
-    """
-    Broadcast that an agent is recording audio in a conversation.
-    """
-    license_id = license.get("license_id")
-    
-    # NOTE: No internal broadcast - see /typing endpoint comment.
-    
-    # Send to external platform
-    try:
-        if data.channel == "telegram":
-            import models
-            from services.telegram_phone_service import TelegramPhoneService
-            
-            session = await models.get_telegram_phone_session(license_id, data.sender_contact)
-            if session and session.session_string:
-                service = TelegramPhoneService()
-                await service.set_typing(
-                    session.session_string,
-                    data.sender_contact,
-                    action="recording" if data.is_active else "cancel"
-                )
-        # WhatsApp doesn't support "recording" distinct from "typing" well in Cloud API stub
-        # We can map it to typing if we want, or ignore.
-        
-    except Exception as e:
-        print(f"Failed to send external recording indicator: {e}")
-
-    return {"success": True}
 
 
 @router.get("/{sender_contact:path}")

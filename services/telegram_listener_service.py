@@ -10,7 +10,8 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 
 from logging_config import get_logger
-from services.websocket_manager import broadcast_typing_indicator, broadcast_recording_indicator
+
+
 from db_helper import fetch_all, get_db, fetch_one
 import base64
 
@@ -144,27 +145,9 @@ class TelegramListenerService:
             @client.on(events.UserUpdate)
             async def handler(event):
                 try:
-                    # We need the sender's phone or ID to broadcast
-                    sender = await event.get_sender()
-                    sender_contact = getattr(sender, 'phone', str(sender.id))
-                    
-                    if event.typing:
-                        await broadcast_typing_indicator(
-                            license_id=license_id,
-                            sender_contact=sender_contact,
-                            is_typing=True
-                        )
-                    elif event.recording:
-                        await broadcast_recording_indicator(
-                            license_id=license_id,
-                            sender_contact=sender_contact,
-                            is_recording=True
-                        )
-                    elif event.cancel:
-                        # Cancel could mean stop typing OR stop recording
-                        # We send false for both to be safe
-                        await broadcast_typing_indicator(license_id, sender_contact, False)
-                        await broadcast_recording_indicator(license_id, sender_contact, False)
+                    # We only care about online status if we were to implement it fully, 
+                    # but for now we are removing typing/recording.
+                    pass
                         
                 except Exception as e:
                     logger.debug(f"Error handling Telegram UserUpdate: {e}")

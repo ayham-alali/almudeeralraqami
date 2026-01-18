@@ -380,28 +380,7 @@ async def broadcast_presence_update(license_id: int, is_online: bool, last_seen:
     ))
 
 
-async def broadcast_typing_indicator(license_id: int, sender_contact: str, is_typing: bool):
-    """Broadcast typing indicator for a conversation"""
-    manager = get_websocket_manager()
-    await manager.send_to_license(license_id, WebSocketMessage(
-        event="typing_indicator",
-        data={
-            "sender_contact": sender_contact,
-            "is_typing": is_typing
-        }
-    ))
 
-
-async def broadcast_recording_indicator(license_id: int, sender_contact: str, is_recording: bool):
-    """Broadcast recording indicator for a conversation"""
-    manager = get_websocket_manager()
-    await manager.send_to_license(license_id, WebSocketMessage(
-        event="recording_indicator",
-        data={
-            "sender_contact": sender_contact,
-            "is_recording": is_recording
-        }
-    ))
 
 
 # ============ Reaction Broadcasting ============
