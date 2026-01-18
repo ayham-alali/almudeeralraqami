@@ -1625,7 +1625,6 @@ async def upsert_conversation_state(
             SELECT COUNT(*) as count FROM inbox_messages 
             WHERE license_key_id = ? 
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
-            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status = 'analyzed' 
             AND deleted_at IS NULL
             AND ({unread_conditions})
@@ -1656,7 +1655,6 @@ async def upsert_conversation_state(
             SELECT id, body, received_at as created_at, status 
             FROM inbox_messages 
             WHERE license_key_id = ? 
-            AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status != 'pending'
             AND deleted_at IS NULL
