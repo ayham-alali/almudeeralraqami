@@ -173,6 +173,9 @@ class TelegramListenerService:
             @client.on(events.NewMessage(incoming=True))
             async def msg_handler(event):
                 try:
+                    if not event.is_private:
+                        return
+
                     # 1. Extract basic info
                     sender = await event.get_sender()
                     if not sender: return
@@ -185,7 +188,9 @@ class TelegramListenerService:
                     else:
                         sender_contact = f"tg:{sender.id}"
                     
-                    sender_name = f"{getattr(sender, 'first_name', '')} {getattr(sender, 'last_name', '')}".strip() or "Telegram User"
+                    first = getattr(sender, 'first_name', '') or ''
+                    last = getattr(sender, 'last_name', '') or ''
+                    sender_name = f"{first} {last}".strip() or "Telegram User"
                     
                     body = event.message.message or ""
                     channel_message_id = str(event.message.id)
