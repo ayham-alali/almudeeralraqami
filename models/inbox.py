@@ -1673,7 +1673,7 @@ async def upsert_conversation_state(
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status != 'pending'
             AND deleted_at IS NULL
-            ORDER BY created_at ASC LIMIT 1
+            ORDER BY created_at DESC LIMIT 1
         """, total_params)
         
         # Outbox params

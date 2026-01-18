@@ -777,6 +777,7 @@ class MessagePoller:
                     "body": msg["body"],
                     "sender_contact": msg.get("sender_contact"),
                     "sender_name": msg.get("sender_name"),
+                    "sender_id": msg.get("sender_id"),
                     "subject": msg.get("subject"),
                     "channel": "telegram",
                     "attachments": msg.get("attachments", []),

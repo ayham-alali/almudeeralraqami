@@ -192,29 +192,45 @@ def filter_automated_messages(message: Dict) -> tuple[bool, Optional[str]]:
         return False, "Automated: OTP/Verification"
 
     # ============ 2. MARKETING / ADS / OFFERS ============
-    marketing_keywords = [
+    # Check if this is a private chat (based on metadata)
+    is_group = message.get("is_group", False)
+    is_channel_src = message.get("is_channel", False)
+    is_private = not (is_group or is_channel_src)
+
+    marketing_keywords_strict = [
         # English
         "unsubscribe", "opt-out", "stop to end", "manage preferences",
-        "promotional", "limited time offer", "special offer", "discount",
-        "click here", "click below", "exclusive deal", "act now",
-        "advertisement", "sponsored", "promoted", "ad:", "[ad]",
-        "flash sale", "today only", "sale ends", "hurry",
-        "% off", "save now", "deal of the day", "best price",
-        "clearance", "buy now", "shop now", "order now",
-        "free shipping", "free trial", "free gift", "bonus",
-        "coupon", "voucher", "promo code", "discount code",
-        "you've been selected", "congratulations", "winner",
-        "claim your", "redeem", "expires soon", "last chance",
+        "promotional", "limited time offer", "special offer", "exclusive deal", 
+        "advertisement", "sponsored", "promoted", "[ad]",
+        "flash sale", "today only", "sale ends",
         # Arabic
         "إلغاء الاشتراك", "أرسل توقف", "عرض خاص", "لفترة محدودة",
         "تخفيضات", "خصم خاص", "اشترك الآن", "عرض حصري",
-        "تسوق الآن", "اطلب الآن", "خصم", "عرض اليوم",
+        "تسوق الآن", "اطلب الآن", "خصم اليوم", "عرض اليوم",
         "تنزيلات", "خصم حصري", "أسعار مخفضة", "فرصة لا تعوض",
-        "احصل على", "مجاني", "هدية", "جائزة", "فائز", "فوز",
         "كوبون", "قسيمة", "رمز الخصم", "برعاية", "إعلان", "ترويج",
     ]
-    if any(k in full_text for k in marketing_keywords):
+    
+    # Keywords that are common in REAL chats but also ads (False Positive risks)
+    # We only block these in [NON-PRIVATE] chats
+    marketing_risk_keywords = [
+        "discount", "click here", "click below", "act now", "ad:", "save now",
+        "best price", "clearance", "buy now", "shop now", "order now",
+        "free shipping", "free trial", "free gift", "bonus",
+        "you've been selected", "congratulations", "winner",
+        "claim your", "redeem", "expires soon", "last chance",
+        "خصم", "مجاني", "هدية", "جائزة", "فائز", "فوز", "احصل على"
+    ]
+
+    # Block strict keywords always
+    if any(k in full_text for k in marketing_keywords_strict):
         return False, "Automated: Marketing/Ad"
+        
+    # Block risk keywords only in Groups/Channels
+    if not is_private:
+        if any(k in full_text for k in marketing_risk_keywords):
+            return False, "Automated: Marketing/Ad (Group/Channel Content)"
+
 
     # ============ 3. SYSTEM / INFO / TRANSACTIONAL ============
     info_keywords = [
@@ -410,11 +426,14 @@ def filter_urgency(message: Dict, min_urgency: str = "normal") -> tuple[bool, Op
 def filter_chat_types(message: Dict) -> tuple[bool, Optional[str]]:
     """Filter messages from non-private chats (groups, channels)"""
     
-    # 1. Check explicit flags
-    if message.get("is_group"):
+    # 1. Check explicit flags (Passed from listeners)
+    is_group = message.get("is_group", False)
+    is_channel_src = message.get("is_channel", False)
+    
+    if is_group:
         return False, "Message blocked: Source is a Group"
         
-    if message.get("is_channel"):
+    if is_channel_src:
         return False, "Message blocked: Source is a Channel"
         
     chat_type = message.get("chat_type")
@@ -426,7 +445,6 @@ def filter_chat_types(message: Dict) -> tuple[bool, Optional[str]]:
     # or negative IDs often indicate groups/channels in Telegram/MTProto
     sender_id = str(message.get("sender_id", ""))
     if sender_id.startswith("-100") or (sender_id.startswith("-") and len(sender_id) > 5):
-        # Allow if it's explicitly marked private? No, negative ID is never a private user.
         return False, "Message blocked: Sender ID indicates non-private entity"
 
     # 3. WhatsApp Checks

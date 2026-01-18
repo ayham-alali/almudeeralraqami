@@ -197,6 +197,9 @@ class TelegramListenerService:
                         "body": body,
                         "sender_contact": sender_contact,
                         "sender_name": sender_name,
+                        "sender_id": str(event.sender_id) if hasattr(event, 'sender_id') else None,
+                        "is_group": event.is_group,
+                        "is_channel": event.is_channel,
                         "channel": "telegram"
                     }
                     
