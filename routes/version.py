@@ -53,6 +53,9 @@ _APP_DOWNLOAD_URL = _APK_CDN_URL if _APK_CDN_URL else os.getenv(
     "APP_DOWNLOAD_URL", "https://almudeer.up.railway.app/download/almudeer.apk"
 )
 
+# iOS Store URL - Fallback if not in DB config
+_IOS_STORE_URL = os.getenv("IOS_STORE_URL", "")
+
 # Force update can be disabled in emergencies
 _FORCE_UPDATE_ENABLED = os.getenv("FORCE_UPDATE_ENABLED", "true").lower() == "true"
 
@@ -415,7 +418,7 @@ async def check_app_version(request: Request):
         "message": _MESSAGES["ar"]["update_message"],
         
         # iOS
-        "ios_store_url": update_config.get("ios_store_url"),
+        "ios_store_url": update_config.get("ios_store_url") or _IOS_STORE_URL,
         
         # Security
         "apk_signing_fingerprint": await _get_apk_signing_fingerprint(),
