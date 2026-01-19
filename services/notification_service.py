@@ -769,12 +769,11 @@ async def process_message_notifications(
     if message_id:
         try:
             from db_helper import get_db, fetch_one
-            from datetime import datetime, timedelta
             async with get_db() as db:
                 existing = await fetch_one(
                     db,
-                    "SELECT id FROM notification_log WHERE license_key_id = ? AND message_id = ? AND created_at > ?",
-                    [license_id, message_id, (datetime.utcnow() - timedelta(minutes=5))]
+                    "SELECT id FROM notification_log WHERE license_key_id = ? AND message_id = ?",
+                    [license_id, message_id]
                 )
                 if existing:
                     logger.info(f"Skipping duplicate notification processing for msg {message_id}")
