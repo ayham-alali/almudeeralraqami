@@ -362,7 +362,7 @@ class TelegramListenerService:
                     async with get_db() as db:
                         await execute_sql(
                             db, 
-                            "UPDATE telegram_phone_sessions SET is_active = FALSE, status = 'invalid_session', updated_at = ? WHERE license_key_id = ?",
+                            "UPDATE telegram_phone_sessions SET is_active = FALSE, updated_at = ? WHERE license_key_id = ?",
                             [datetime.now(timezone.utc), license_id]
                         )
                 except Exception as db_e:
