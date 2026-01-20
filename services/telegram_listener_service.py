@@ -247,7 +247,7 @@ class TelegramListenerService:
 
                     # -- Apply global filters (blocklist/whitelist) --
                     # Avoid overhead if possible, but safe to check
-                    from services.filters import apply_filters
+                    from message_filters import apply_filters
                     # Mock filter msg structure
                     filter_msg = {
                         "body": body,
