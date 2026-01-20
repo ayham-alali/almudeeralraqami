@@ -561,8 +561,9 @@ async def send_fcm_to_license(
         rows = await fetch_all(
             db,
             """
-            SELECT id, token FROM fcm_tokens
+            SELECT id, token, device_id, platform FROM fcm_tokens
             WHERE license_key_id = ? AND is_active = TRUE
+            ORDER BY device_id DESC, updated_at DESC
             """,
             [license_id]
         )
@@ -570,7 +571,31 @@ async def send_fcm_to_license(
         if not rows:
             return 0
         
+        # Deduplicate by device_id
+        # Since we order by device_id DESC, non-nulls come first (usually). 
+        # Actually in SQL NULLs ordering depends on DB. 
+        # We'll stick to a set-based deduplication in python.
+        
+        processed_device_ids = set()
+        unique_tokens = []
+        
         for row in rows:
+            device_id = row.get("device_id")
+            token = row.get("token")
+            
+            # If we have a device ID, ensure we haven't sent to it already
+            if device_id:
+                if device_id in processed_device_ids:
+                    continue
+                processed_device_ids.add(device_id)
+            
+            # Simple token deduplication (just in case)
+            if any(r["token"] == token for r in unique_tokens):
+                continue
+                
+            unique_tokens.append(row)
+
+        for row in unique_tokens:
             # Prepare data with tracking IDs
             tracking_data = data.copy() if data else {}
             if notification_id:
