@@ -351,6 +351,14 @@ class TelegramListenerService:
         except Exception as e:
             if license_id in self.clients:
                 del self.clients[license_id]
+            
+            # Ensure cleanup of local client if it wasn't stored or if explicit error occurred
+            if client:
+                try:
+                    await client.disconnect()
+                except:
+                    pass
+                    
             logger.error(f"Failed to start Telegram client for license {license_id}: {e}")
 
     async def ensure_client_active(self, license_id: int) -> Optional[TelegramClient]:
@@ -368,6 +376,24 @@ class TelegramListenerService:
             else:
                 # Cleanup disconnected client
                 del self.clients[license_id]
+
+        # --- PID Lock Check ---
+        # If another process holds the listener lock, we CANNOT start a client here.
+        # This prevents workers in multi-process setups from creating conflicting sessions.
+        lock_file = "telegram_listener.lock"
+        if os.path.exists(lock_file):
+            try:
+                with open(lock_file, "r") as f:
+                    locked_pid = int(f.read().strip())
+                
+                if locked_pid != os.getpid():
+                    # We are not the listener process. We cannot connect.
+                    # We log a warning once (or debug) to avoid spamming.
+                    logger.warning(f"Process {os.getpid()} cannot start Telegram client (Locked by PID {locked_pid}). Telegram features restricted to primary listener process.")
+                    return None
+            except Exception:
+                pass # Ignore file read errors, proceed to try locking locally
+        # ----------------------
         
         # Initialize lock if needed
         if license_id not in self.locks:
