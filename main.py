@@ -429,6 +429,10 @@ from routes.version_analytics import router as version_analytics_router
 app.include_router(version_router)
 app.include_router(version_analytics_router)
 
+# Sync routes for offline operation support
+from routes.sync import router as sync_router
+app.include_router(sync_router)
+
 @app.get("/debug/routes")
 async def list_all_routes(x_admin_key: str = Header(None, alias="X-Admin-Key")):
     """List all registered routes for debugging (development only, or requires admin key)"""
