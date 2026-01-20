@@ -6,21 +6,12 @@ with idempotency key support to prevent duplicate processing.
 """
 from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request, BackgroundTasks
 from pydantic import BaseModel, Field
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
-from dependencies import get_license_context
-from database import get_db
-from routes.chat_routes import approve_inbox_message
-from routes.integrations import send_customer_message
-from routes.notifications import process_message_notifications
+from dependencies import get_license_from_header
 
 router = APIRouter(prefix="/api/v1/sync", tags=["sync"])
-
-# Rate limiter for sync endpoints
-limiter = Limiter(key_func=get_remote_address)
 
 
 class SyncOperation(BaseModel):
@@ -67,7 +58,6 @@ def _check_idempotency(key: str) -> Optional[SyncResult]:
     """Check if operation was already processed."""
     if key in _idempotency_cache:
         result, timestamp = _idempotency_cache[key]
-        # Check if still valid (within TTL)
         age = (datetime.now(timezone.utc) - timestamp).total_seconds() / 3600
         if age < IDEMPOTENCY_CACHE_TTL_HOURS:
             return result
@@ -80,7 +70,7 @@ def _store_idempotency(key: str, result: SyncResult):
     """Store operation result for idempotency."""
     _idempotency_cache[key] = (result, datetime.now(timezone.utc))
     
-    # Clean old entries (simple cleanup - in production use proper TTL)
+    # Clean old entries
     if len(_idempotency_cache) > 10000:
         cutoff = datetime.now(timezone.utc)
         to_delete = [
@@ -92,45 +82,38 @@ def _store_idempotency(key: str, result: SyncResult):
 
 
 @router.post("/batch", response_model=SyncResponse)
-@limiter.limit("10/minute")
 async def sync_batch(
     request: Request,
     sync_request: SyncRequest,
-    license_context: dict = Depends(get_license_context),
+    background_tasks: BackgroundTasks,
+    license_data: dict = Depends(get_license_from_header),
 ):
     """
     Process a batch of offline operations with idempotency support.
     
     Each operation includes an idempotency_key to prevent duplicate processing.
     Operations are processed in order.
-    
-    Rate limited to 10 requests per minute per IP to prevent abuse.
-    
-    Args:
-        sync_request: Batch of operations to sync
-        
-    Returns:
-        Results for each operation including conflict detection
     """
-    license_id = license_context["license_id"]
+    license_id = license_data.get("license_id")
     results: List[SyncResult] = []
     
     for op in sync_request.operations:
         try:
-            # Check idempotency first
+            # Check idempotency first (in-memory cache)
             cached = _check_idempotency(op.idempotency_key)
             if cached:
                 results.append(cached)
                 continue
             
-            # Process operation based on type
-            result = await _process_operation(op, license_id)
+            # Process operation
+            result = await _process_operation(op, license_id, background_tasks)
             
-            # Store for idempotency
             _store_idempotency(op.idempotency_key, result)
             results.append(result)
             
         except Exception as e:
+            # Log error but don't crash batch
+            print(f"Sync error op {op.id}: {e}")
             result = SyncResult(
                 operation_id=op.id,
                 success=False,
@@ -147,49 +130,117 @@ async def sync_batch(
     )
 
 
-async def _process_operation(op: SyncOperation, license_id: int) -> SyncResult:
-    """Process a single sync operation."""
+async def _process_operation(op: SyncOperation, license_id: int, background_tasks: BackgroundTasks) -> SyncResult:
+    """Process a single sync operation using shared business logic."""
+    from models import (
+        create_outbox_message,
+        approve_outbox_message,
+        get_full_chat_history,
+    )
+    from models.inbox import (
+        get_inbox_message_by_id,
+        ignore_chat,
+        approve_chat_messages,
+        update_inbox_status,
+        soft_delete_message,
+        mark_chat_read,
+        soft_delete_conversation,
+    )
+    from routes.chat_routes import send_approved_message
+
     try:
         if op.type == "approve":
             message_id = op.payload.get("messageId")
             edited_body = op.payload.get("editedBody")
             
-            async with get_db() as db:
-                await _approve_message(db, license_id, message_id, "approve", edited_body)
+            message = await get_inbox_message_by_id(message_id, license_id)
+            if not message:
+                return SyncResult(operation_id=op.id, success=False, error="Message not found")
             
+            body = edited_body or message.get("ai_draft_response")
+            if not body:
+                return SyncResult(operation_id=op.id, success=False, error="No response body")
+            
+            # Create and approve outbox message
+            outbox_id = await create_outbox_message(
+                inbox_message_id=message_id,
+                license_id=license_id,
+                channel=message["channel"],
+                body=body,
+                recipient_id=message.get("sender_id"),
+                recipient_email=message.get("sender_contact")
+            )
+            await approve_outbox_message(outbox_id, body)
+            await update_inbox_status(message_id, "approved")
+            
+            sender = message.get("sender_contact") or message.get("sender_id")
+            if sender:
+                await approve_chat_messages(license_id, sender)
+            
+            # Queue for sending
+            background_tasks.add_task(send_approved_message, outbox_id, license_id)
             return SyncResult(operation_id=op.id, success=True)
             
         elif op.type == "ignore":
             message_id = op.payload.get("messageId")
+            message = await get_inbox_message_by_id(message_id, license_id)
             
-            async with get_db() as db:
-                await _approve_message(db, license_id, message_id, "ignore", None)
+            if message:
+                sender = message.get("sender_contact") or message.get("sender_id")
+                if sender:
+                    await ignore_chat(license_id, sender)
+                else:
+                    await update_inbox_status(message_id, "ignored")
             
             return SyncResult(operation_id=op.id, success=True)
             
         elif op.type == "send":
             sender_contact = op.payload.get("senderContact")
-            message = op.payload.get("body")
+            body = op.payload.get("body")
             
-            async with get_db() as db:
-                await _send_message(db, license_id, sender_contact, message)
+            if not body:
+                return SyncResult(operation_id=op.id, success=False, error="Empty body")
+
+            # Need to fetch conversation to get recipient_id and channel
+            # This logic mimics send_chat_message in chat_routes
+            history = await get_full_chat_history(license_id, sender_contact, limit=1)
+            if not history:
+                 # Fallback if no history - might need to guess or fail
+                 # For now, let's fail if we can't find the conversation context
+                 # In future, we could look up by contact directly
+                 return SyncResult(operation_id=op.id, success=False, error="Conversation not found")
+
+            channel = history[0].get("channel", "whatsapp")
+            recipient_id = history[0].get("sender_id")
+
+            outbox_id = await create_outbox_message(
+                inbox_message_id=0,
+                license_id=license_id,
+                channel=channel,
+                body=body,
+                recipient_id=recipient_id,
+                recipient_email=sender_contact,
+                attachments=None
+            )
+            
+            await approve_outbox_message(outbox_id, body)
+            background_tasks.add_task(send_approved_message, outbox_id, license_id)
             
             return SyncResult(operation_id=op.id, success=True)
             
         elif op.type == "delete":
             message_id = op.payload.get("messageId")
-            
-            async with get_db() as db:
-                await _delete_message(db, license_id, message_id)
-            
+            await soft_delete_message(message_id, license_id)
             return SyncResult(operation_id=op.id, success=True)
             
         elif op.type == "mark_read":
             sender_contact = op.payload.get("senderContact")
+            await mark_chat_read(license_id, sender_contact)
+            return SyncResult(operation_id=op.id, success=True)
             
-            async with get_db() as db:
-                await _mark_conversation_read(db, license_id, sender_contact)
-            
+        elif op.type == "delete_conversation":
+            sender_contact = op.payload.get("senderContact")
+            await soft_delete_conversation(license_id, sender_contact)
             return SyncResult(operation_id=op.id, success=True)
             
         else:
@@ -200,6 +251,7 @@ async def _process_operation(op: SyncOperation, license_id: int) -> SyncResult:
             )
             
     except Exception as e:
+        print(f"Error processing op {op.type}: {e}")
         return SyncResult(
             operation_id=op.id,
             success=False,
@@ -207,113 +259,15 @@ async def _process_operation(op: SyncOperation, license_id: int) -> SyncResult:
         )
 
 
-async def _approve_message(db, license_id: int, message_id: int, action: str, edited_body: Optional[str]):
-    """Approve or ignore a message."""
-    # Get message and verify ownership
-    message = await db.fetchrow(
-        """
-        SELECT id, license_id, status 
-        FROM inbox_messages 
-        WHERE id = $1 AND license_id = $2
-        """,
-        message_id, license_id
-    )
-    
-    if not message:
-        raise ValueError(f"Message {message_id} not found")
-    
-    new_status = "approved" if action == "approve" else "ignored"
-    
-    await db.execute(
-        """
-        UPDATE inbox_messages 
-        SET status = $1, updated_at = NOW()
-        WHERE id = $2
-        """,
-        new_status, message_id
-    )
-
-
-async def _send_message(db, license_id: int, sender_contact: str, message: str):
-    """Send a message to a conversation."""
-    # Get the channel for this contact
-    existing = await db.fetchrow(
-        """
-        SELECT channel FROM inbox_messages 
-        WHERE license_id = $1 AND sender_contact = $2
-        ORDER BY created_at DESC LIMIT 1
-        """,
-        license_id, sender_contact
-    )
-    
-    channel = existing["channel"] if existing else "whatsapp"
-    
-    # Create outbox message
-    await db.execute(
-        """
-        INSERT INTO outbox_messages (license_id, sender_contact, body, channel, status, created_at)
-        VALUES ($1, $2, $3, $4, 'pending', NOW())
-        """,
-        license_id, sender_contact, message, channel
-    )
-
-
-async def _delete_message(db, license_id: int, message_id: int):
-    """Soft delete a message."""
-    await db.execute(
-        """
-        UPDATE inbox_messages 
-        SET is_deleted = true, deleted_at = NOW()
-        WHERE id = $1 AND license_id = $2
-        """,
-        message_id, license_id
-    )
-
-
-async def _mark_conversation_read(db, license_id: int, sender_contact: str):
-    """Mark all messages in a conversation as read."""
-    await db.execute(
-        """
-        UPDATE inbox_messages 
-        SET is_read = true, read_at = NOW()
-        WHERE license_id = $1 AND sender_contact = $2 AND is_read = false
-        """,
-        license_id, sender_contact
-    )
-
-
 @router.get("/status")
 async def get_sync_status(
-    license_context: dict = Depends(get_license_context),
+    license_data: dict = Depends(get_license_from_header),
 ):
     """
     Get sync status for the current license.
     
-    Returns last sync timestamp and any pending server-side events.
+    Returns server timestamp for client sync coordination.
     """
-    license_id = license_context["license_id"]
-    
-    async with get_db() as db:
-        # Get count of pending messages
-        pending = await db.fetchval(
-            """
-            SELECT COUNT(*) FROM inbox_messages 
-            WHERE license_id = $1 AND status = 'analyzed'
-            """,
-            license_id
-        )
-        
-        # Get last message timestamp
-        last_message = await db.fetchval(
-            """
-            SELECT MAX(created_at) FROM inbox_messages 
-            WHERE license_id = $1
-            """,
-            license_id
-        )
-    
     return {
-        "pending_count": pending or 0,
-        "last_message_at": last_message.isoformat() if last_message else None,
         "server_timestamp": datetime.now(timezone.utc).isoformat(),
     }
