@@ -162,7 +162,14 @@ class TelegramListenerService:
             
             # If not running, start client
             if license_id not in self.clients:
-                await self._start_client(license_id, session_string, phone_number)
+                # Ensure lock exists
+                if license_id not in self.locks:
+                    self.locks[license_id] = asyncio.Lock()
+                    
+                async with self.locks[license_id]:
+                    # Double check inside lock
+                    if license_id not in self.clients:
+                        await self._start_client(license_id, session_string, phone_number)
 
         # Stop clients for sessions that are no longer active
         current_clients = list(self.clients.keys())
