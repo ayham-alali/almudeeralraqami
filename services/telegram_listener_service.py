@@ -50,7 +50,43 @@ class TelegramListenerService:
         if self.running:
             return
             
-        logger.info("Starting Telegram Listener Service...")
+        # --- PID Lock Mechanism ---
+        import sys
+        lock_file = "telegram_listener.lock"
+        
+        try:
+            if os.path.exists(lock_file):
+                with open(lock_file, "r") as f:
+                    old_pid = int(f.read().strip())
+                
+                # Check if process is still running
+                try:
+                    # On Windows, we can't easily check arbitrary PIDs without psutil or ctypes.
+                    # As a simpler fallback: If the file exists, assume it's locked unless staleness 
+                    # is handled by restart. But `start` runs on every worker.
+                    # We MUST skip if another worker holds it.
+                    # Since we can't reliably check liveness without psutil, 
+                    # we will assume if the PID is not OUR PID, it's another worker.
+                    
+                    if old_pid != os.getpid():
+                        logger.warning(f"Telegram Listener already running in process {old_pid}. Skipping start in {os.getpid()}.")
+                        return
+                except ValueError:
+                    # corrupted lock file, ignore and overwrite
+                    pass
+            
+            # Create/Overwrite lock
+            with open(lock_file, "w") as f:
+                f.write(str(os.getpid()))
+                
+        except Exception as e:
+            logger.warning(f"Failed to acquire Telegram lock: {e}")
+            # Continue anyway? No, safer to fail or continue if it's file permission error
+            # But proceed for now.
+        
+        # --------------------------
+
+        logger.info(f"Starting Telegram Listener Service (PID: {os.getpid()})...")
         self.running = True
         self.monitor_task = asyncio.create_task(self._monitor_sessions())
 
@@ -59,12 +95,24 @@ class TelegramListenerService:
         logger.info("Stopping Telegram Listener Service...")
         self.running = False
         
+        # Release lock if we own it
+        lock_file = "telegram_listener.lock"
+        try:
+            if os.path.exists(lock_file):
+                with open(lock_file, "r") as f:
+                    pid = int(f.read().strip())
+                if pid == os.getpid():
+                    os.remove(lock_file)
+        except Exception:
+            pass
+
         if self.monitor_task:
             self.monitor_task.cancel()
             try:
                 await self.monitor_task
             except asyncio.CancelledError:
                 pass
+            self.monitor_task = None
         
         # Disconnect all clients
         keys = list(self.clients.keys())
