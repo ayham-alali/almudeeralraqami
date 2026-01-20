@@ -28,7 +28,10 @@ def get_mime_type(file_ext: str) -> str:
     if ext in ['jpg', 'jpeg']: return 'image/jpeg'
     if ext == 'png': return 'image/png'
     if ext == 'webp': return 'image/webp'
-    if ext in ['mp3', 'm4a', 'ogg']: return 'audio/ogg' # Generalize for voice
+    if ext == 'pdf': return 'application/pdf'
+    if ext == 'mp4': return 'video/mp4'
+    if ext == 'mp3': return 'audio/mpeg'
+    if ext in ['m4a', 'ogg']: return 'audio/ogg' # Generalize for voice
     if ext == 'wav': return 'audio/wav'
     return 'application/octet-stream'
 

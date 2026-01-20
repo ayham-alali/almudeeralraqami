@@ -70,7 +70,48 @@ def auth_headers(sample_license_key) -> dict:
 
 @pytest.fixture
 async def db_session():
-    """Create a test database session"""
+    """Create a test database session with schema initialized"""
     from db_helper import get_db
     async with get_db() as db:
+        # Initialize Schema (SQLite compatible)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS license_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key_hash TEXT UNIQUE NOT NULL,
+                company_name TEXT NOT NULL,
+                contact_email TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP,
+                max_requests_per_day INTEGER DEFAULT 100,
+                requests_today INTEGER DEFAULT 0,
+                last_request_date DATE
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS usage_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key_id INTEGER REFERENCES license_keys(id),
+                action_type TEXT NOT NULL,
+                input_preview TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS crm_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key_id INTEGER REFERENCES license_keys(id),
+                sender_name TEXT,
+                sender_contact TEXT,
+                message_type TEXT,
+                intent TEXT,
+                extracted_data TEXT,
+                original_message TEXT,
+                draft_response TEXT,
+                status TEXT DEFAULT 'جديد',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+        """)
+        await db.commit()
         yield db
