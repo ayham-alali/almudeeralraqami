@@ -39,6 +39,7 @@ class TelegramListenerService:
             cls._instance.running = False
             cls._instance.monitor_task = None
             cls._instance.background_tasks = set() # Track fire-and-forget tasks
+            cls._instance.distributed_lock = None # Distributed Lock instance
         return cls._instance
 
     def __init__(self):
@@ -49,40 +50,27 @@ class TelegramListenerService:
         """Start the listener service"""
         if self.running:
             return
+
+        # Check for manual disable (useful for dev/prod split)
+        if os.getenv("DISABLE_TELEGRAM_LISTENER", "").lower() == "true":
+            logger.info("Telegram Listener is disabled via environment variable.")
+            return
             
-        # --- PID Lock Mechanism ---
-        import sys
-        lock_file = "telegram_listener.lock"
+        # --- Distributed Lock Mechanism ---
+        # Replaces local PID file to support multiple deployments sharing a DB (e.g. Railway Rolling Updates)
+        # Use a fixed key for Telegram Service (e.g. 884848)
+        from services.distributed_lock import DistributedLock
         
-        try:
-            if os.path.exists(lock_file):
-                with open(lock_file, "r") as f:
-                    old_pid = int(f.read().strip())
-                
-                # Check if process is still running
-                try:
-                    # On Windows, we can't easily check arbitrary PIDs without psutil or ctypes.
-                    # As a simpler fallback: If the file exists, assume it's locked unless staleness 
-                    # is handled by restart. But `start` runs on every worker.
-                    # We MUST skip if another worker holds it.
-                    # Since we can't reliably check liveness without psutil, 
-                    # we will assume if the PID is not OUR PID, it's another worker.
-                    
-                    if old_pid != os.getpid():
-                        logger.warning(f"Telegram Listener already running in process {old_pid}. Skipping start in {os.getpid()}.")
-                        return
-                except ValueError:
-                    # corrupted lock file, ignore and overwrite
-                    pass
-            
-            # Create/Overwrite lock
-            with open(lock_file, "w") as f:
-                f.write(str(os.getpid()))
-                
-        except Exception as e:
-            logger.warning(f"Failed to acquire Telegram lock: {e}")
-            # Continue anyway? No, safer to fail or continue if it's file permission error
-            # But proceed for now.
+        self.distributed_lock = DistributedLock(lock_id=884848, lock_name="telegram_listener")
+        acquired = await self.distributed_lock.acquire()
+        
+        if not acquired:
+            logger.warning("Telegram Listener Lock is held by another process/deployment. Entering Standby Mode.")
+            # We do NOT return or stop completely - we just don't start the monitor task.
+            # But wait - if we don't start, ensure_client_active calls might fail if they expect self.running?
+            # Actually, ensure_client_active should check the lock too.
+            # For now, simplest: Return. We are not the leader.
+            return
         
         # --------------------------
 
@@ -377,22 +365,12 @@ class TelegramListenerService:
                 # Cleanup disconnected client
                 del self.clients[license_id]
 
-        # --- PID Lock Check ---
-        # If another process holds the listener lock, we CANNOT start a client here.
-        # This prevents workers in multi-process setups from creating conflicting sessions.
-        lock_file = "telegram_listener.lock"
-        if os.path.exists(lock_file):
-            try:
-                with open(lock_file, "r") as f:
-                    locked_pid = int(f.read().strip())
-                
-                if locked_pid != os.getpid():
-                    # We are not the listener process. We cannot connect.
-                    # We log a warning once (or debug) to avoid spamming.
-                    logger.warning(f"Process {os.getpid()} cannot start Telegram client (Locked by PID {locked_pid}). Telegram features restricted to primary listener process.")
-                    return None
-            except Exception:
-                pass # Ignore file read errors, proceed to try locking locally
+        # --- Distributed Lock Check ---
+        # If we don't hold the distributed lock, we cannot start clients.
+        # This handles multi-container deployments (Railway) correctly.
+        if not self.distributed_lock or not self.distributed_lock.locked:
+             logger.warning(f"Process {os.getpid()} cannot start Telegram client (Not the Leader). Telegram features restricted to Leader process.")
+             return None
         # ----------------------
         
         # Initialize lock if needed
