@@ -688,21 +688,28 @@ class MessagePoller:
             # Extract exclude_ids for optimization
             exclude_ids = [msg["channel_message_id"] for msg in recent_messages if msg.get("channel_message_id")]
 
-            # Try to get active client from listener service to reuse connection
+            # Get active client from listener service - centralized management
             active_client = None
             try:
                 from services.telegram_listener_service import get_telegram_listener
                 listener = get_telegram_listener()
-                if listener.running and license_id in listener.clients:
-                    potential_client = listener.clients[license_id]
-                    # Verify it's connected
-                    if potential_client.is_connected():
-                         active_client = potential_client
-                         logger.debug(f"Reusing active Telegram client for license {license_id}")
+                
+                # This will verify connection or try to start it if missing
+                # Crucial: This PREVENTS the "session used under two IP addresses" error
+                # by ensuring we only ever use the SINGLE managed client instance
+                active_client = await listener.ensure_client_active(license_id)
+                
             except Exception as e:
-                logger.debug(f"Could not get active Telegram client: {e}")
+                logger.error(f"Error getting Telegram client from listener: {e}")
 
-            # Fetch messages with optimization
+            if not active_client:
+                # If we can't get the managed client, we should NOT try to create our own
+                # independent one, as that triggers the session conflict.
+                # Just log and skip this poll cycle.
+                logger.warning(f"Skipping Telegram poll for {license_id}: No active client available in listener")
+                return
+
+            # Fetch messages using the managed client
             try:
                 # If backfill, use larger limit
                 limit = 500 if is_backfill else 200
@@ -711,25 +718,15 @@ class MessagePoller:
                     since_hours=since_hours,
                     limit=limit,
                     exclude_ids=exclude_ids,
-                    skip_replied=is_backfill,  # Skip dialogs where last message is ours (already replied)
-                    client=active_client
+                    skip_replied=is_backfill,
+                    client=active_client # MUST use the reused client
                 )
             except Exception as e:
-                # If the underlying Telethon client or session is invalid, avoid
-                # spamming errors on every poll and disable the session so the
-                # user can re-link it from the dashboard.
+                # If the underlying Telethon client or session is invalid...
                 msg = str(e)
-                logger.warning(
-                    f"Telegram phone session appears invalid for license {license_id}: {msg}. "
-                    f"Deactivating session so the user can re-connect."
-                )
-                try:
-                    await deactivate_telegram_phone_session(license_id)
-                except Exception as de:
-                    logger.error(
-                        f"Failed to deactivate Telegram phone session for license {license_id}: {de}",
-                        exc_info=True,
-                    )
+                logger.error(f"Error fetching telegram messages for {license_id}: {msg}")
+                # We don't deactivate immediately here unless it's a specific auth error,
+                # letting the listener service handle connection lifecycle.
                 return
 
             if not messages:

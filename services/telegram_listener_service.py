@@ -37,6 +37,7 @@ class TelegramListenerService:
             cls._instance.clients = {}  # license_id -> TelegramClient
             cls._instance.running = False
             cls._instance.monitor_task = None
+            cls._instance.background_tasks = set() # Track fire-and-forget tasks
         return cls._instance
 
     def __init__(self):
@@ -139,7 +140,9 @@ class TelegramListenerService:
                 await client.disconnect()
                 return
 
-            # Attach Event Handlers
+            # Store client immediately
+            self.clients[license_id] = client
+            logger.info(f"Telegram client started for license {license_id}")
             
             # 1. User Update (Typing/Recording/Status)
             @client.on(events.UserUpdate)
@@ -275,6 +278,8 @@ class TelegramListenerService:
                                 attachments=attachments
                             )
                         )
+                        self.background_tasks.add(task)
+                        task.add_done_callback(self.background_tasks.discard)
                         
                 except Exception as e:
                     logger.error(f"Error in Telegram real-time message handler: {e}")
@@ -283,11 +288,58 @@ class TelegramListenerService:
             # Telethon clients run in loop automatically once connected and handlers attached?
             # No, we assume client stays connected. 
             
-            self.clients[license_id] = client
-            logger.info(f"Telegram client started for license {license_id}")
+            # Client is already stored at the beginning of this function
+            # self.clients[license_id] = client
+            # logger.info(f"Telegram client started for license {license_id}")
 
         except Exception as e:
+            if license_id in self.clients:
+                del self.clients[license_id]
             logger.error(f"Failed to start Telegram client for license {license_id}: {e}")
+
+    async def ensure_client_active(self, license_id: int) -> Optional[TelegramClient]:
+        """
+        Ensure a client is active for the given license_id.
+        If it's running, return it.
+        If not, try to start it from the DB session.
+        """
+        # 1. if already active, return it
+        if license_id in self.clients:
+            client = self.clients[license_id]
+            if client.is_connected():
+                return client
+            else:
+                # Cleanup disconnected client
+                del self.clients[license_id]
+        
+        # 2. Fetch session from DB and start
+        try:
+            async with get_db() as db:
+                row = await fetch_one(
+                    db,
+                    "SELECT session_data_encrypted, phone_number FROM telegram_phone_sessions WHERE license_key_id = ? AND is_active = TRUE",
+                    [license_id]
+                )
+                
+            if not row:
+                return None
+                
+            encrypted_data = row["session_data_encrypted"]
+            phone_number = row["phone_number"]
+            
+            try:
+                session_string = simple_decrypt(encrypted_data)
+            except Exception as e:
+                logger.error(f"Failed to decrypt session for license {license_id}: {e}")
+                return None
+                
+            await self._start_client(license_id, session_string, phone_number)
+            
+            return self.clients.get(license_id)
+            
+        except Exception as e:
+            logger.error(f"Error ensuring active client for {license_id}: {e}")
+            return None
 
     async def _stop_client(self, license_id: int):
         """Stop and remove a client"""
