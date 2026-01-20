@@ -1125,17 +1125,27 @@ class MessagePoller:
                     
                     if session_string:
                         try:
-                            phone_service = TelegramPhoneService()
-                            # Use sender_id as recipient since that's the chat/user we're replying to
-                            recipient = message.get("recipient_id") or message.get("sender_id")
-                            if recipient:
-                                await phone_service.send_message(
-                                    session_string=session_string,
-                                    recipient_id=str(recipient),
-                                    text=body # Use stripped body
-                                )
-                                sent_anything = True
-                                logger.info(f"Sent Telegram phone reply for outbox {outbox_id}")
+                            # [FIX] Use Centralized Client
+                            from services.telegram_listener_service import get_telegram_listener
+                            listener = get_telegram_listener()
+                            active_client = await listener.ensure_client_active(license_id)
+                            
+                            if active_client:
+                                phone_service = TelegramPhoneService()
+                                # Use sender_id as recipient since that's the chat/user we're replying to
+                                recipient = message.get("recipient_id") or message.get("sender_id")
+                                if recipient:
+                                    await phone_service.send_message(
+                                        session_string=session_string,
+                                        recipient_id=str(recipient),
+                                        text=body, # Use stripped body
+                                        client=active_client # REUSE CLIENT
+                                    )
+                                    sent_anything = True
+                                    logger.info(f"Sent Telegram phone reply for outbox {outbox_id}")
+                            else:
+                                logger.warning(f"Skipping Telegram send for {outbox_id}: No active client available in listener")
+                                
                         except Exception as e:
                             logger.warning(f"Failed to send via Telegram phone for outbox {outbox_id}: {e}")
                     else:
@@ -1237,17 +1247,26 @@ class MessagePoller:
                     elif channel == "telegram":
                         session_string = await get_telegram_phone_session_data(license_id)
                         if session_string:
-                            phone_service = TelegramPhoneService()
-                            recipient = message.get("recipient_id") or message.get("sender_id")
-                            if recipient:
-                                await asyncio.sleep(1)  # Small delay to ensure order
-                                await phone_service.send_voice(
-                                    session_string=session_string,
-                                    recipient_id=str(recipient),
-                                    audio_path=audio_path
-                                )
-                                sent_anything = True
-                                logger.info(f"Sent Telegram Phone audio reply for outbox {outbox_id}")
+                             # [FIX] Use Centralized Client
+                            from services.telegram_listener_service import get_telegram_listener
+                            listener = get_telegram_listener()
+                            active_client = await listener.ensure_client_active(license_id)
+                            
+                            if active_client:
+                                phone_service = TelegramPhoneService()
+                                recipient = message.get("recipient_id") or message.get("sender_id")
+                                if recipient:
+                                    await asyncio.sleep(1)  # Small delay to ensure order
+                                    await phone_service.send_voice(
+                                        session_string=session_string,
+                                        recipient_id=str(recipient),
+                                        audio_path=audio_path,
+                                        client=active_client # REUSE CLIENT
+                                    )
+                                    sent_anything = True
+                                    logger.info(f"Sent Telegram Phone audio reply for outbox {outbox_id}")
+                            else:
+                                logger.warning(f"Skipping Telegram voice send for {outbox_id}: No active client")
                     
                     elif channel == "email":
                         # For email, audio is sent as attachment (handled in GmailAPIService)
@@ -1297,12 +1316,23 @@ class MessagePoller:
                 return
 
             platform_ids = [row["platform_message_id"] for row in rows]
+            
+             # [FIX] Use Centralized Client
+            from services.telegram_listener_service import get_telegram_listener
+            listener = get_telegram_listener()
+            active_client = await listener.ensure_client_active(license_id)
+            
+            if not active_client:
+                 logger.warning(f"Skipping Telegram status poll for {license_id}: No active client")
+                 return
+
             phone_service = TelegramPhoneService()
             
             # Identify status
             statuses = await phone_service.get_messages_read_status(
                 session_string=session_string,
-                channel_message_ids=platform_ids
+                channel_message_ids=platform_ids,
+                client=active_client # REUSE CLIENT
             )
             
             # Update statuses

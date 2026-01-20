@@ -525,7 +525,8 @@ class TelegramPhoneService:
         session_string: str,
         recipient_id: str,
         text: str,
-        reply_to_message_id: Optional[int] = None
+        reply_to_message_id: Optional[int] = None,
+        client: Optional["TelegramClient"] = None
     ) -> Dict:
         """
         Send a message via Telegram
@@ -535,6 +536,7 @@ class TelegramPhoneService:
             recipient_id: Recipient chat ID or username
             text: Message text
             reply_to_message_id: Optional message ID to reply to
+            client: Optional existing TelegramClient to reuse
         
         Returns:
             Dict with sent message info
@@ -542,9 +544,11 @@ class TelegramPhoneService:
         from logging_config import get_logger
         logger = get_logger(__name__)
         
-        client = None
+        client_created_locally = False
         try:
-            client = await self.create_client_from_session(session_string)
+            if not client:
+                client = await self.create_client_from_session(session_string)
+                client_created_locally = True
             
             # CRITICAL: Fetch dialogs first to populate the entity cache
             # This allows get_entity to resolve user IDs that the session has chatted with
@@ -587,7 +591,7 @@ class TelegramPhoneService:
         except Exception as e:
             raise ValueError(f"خطأ في إرسال الرسالة: {str(e)}")
         finally:
-            if client:
+            if client and client_created_locally:
                 try:
                     await client.disconnect()
                 except:
@@ -597,7 +601,8 @@ class TelegramPhoneService:
         self,
         session_string: str,
         recipient_id: str,
-        audio_path: str
+        audio_path: str,
+        client: Optional["TelegramClient"] = None
     ) -> Dict:
         """
         Send a voice message via Telegram
@@ -606,6 +611,7 @@ class TelegramPhoneService:
             session_string: Session string
             recipient_id: Recipient chat ID or username
             audio_path: Path to audio file (MP3, OGG, etc.)
+            client: Optional existing TelegramClient to reuse
         
         Returns:
             Dict with sent message info
@@ -613,9 +619,11 @@ class TelegramPhoneService:
         from logging_config import get_logger
         logger = get_logger(__name__)
         
-        client = None
+        client_created_locally = False
         try:
-            client = await self.create_client_from_session(session_string)
+            if not client:
+                client = await self.create_client_from_session(session_string)
+                client_created_locally = True
             
             # Fetch dialogs first to populate entity cache
             logger.debug(f"Fetching dialogs before sending voice to {recipient_id}")
@@ -652,7 +660,7 @@ class TelegramPhoneService:
             }
         
         finally:
-            if client:
+            if client and client_created_locally:
                 try:
                     await client.disconnect()
                 except:
@@ -663,7 +671,8 @@ class TelegramPhoneService:
         session_string: str,
         recipient_id: str,
         file_path: str,
-        caption: str = None
+        caption: str = None,
+        client: Optional["TelegramClient"] = None
     ) -> Dict:
         """
         Send a general file (video, document, photo) via Telegram
@@ -671,9 +680,11 @@ class TelegramPhoneService:
         from logging_config import get_logger
         logger = get_logger(__name__)
         
-        client = None
+        client_created_locally = False
         try:
-            client = await self.create_client_from_session(session_string)
+            if not client:
+                client = await self.create_client_from_session(session_string)
+                client_created_locally = True
             
             # Fetch dialogs first
             await client.get_dialogs(limit=100)
@@ -709,7 +720,7 @@ class TelegramPhoneService:
         except Exception as e:
             raise ValueError(f"خطأ في إرسال الملف: {str(e)}")
         finally:
-            if client:
+            if client and client_created_locally:
                 try:
                     await client.disconnect()
                 except:
@@ -722,7 +733,8 @@ class TelegramPhoneService:
         self,
         session_string: str,
         chat_id: str,
-        max_id: int = 0
+        max_id: int = 0,
+        client: Optional["TelegramClient"] = None
     ) -> bool:
         """
         Mark messages in a chat as read (triggers double check for sender)
@@ -731,13 +743,16 @@ class TelegramPhoneService:
             session_string: Session string
             chat_id: Chat ID to mark as read
             max_id: Mark as read up to this message ID (0 = all)
+            client: Optional existing TelegramClient to reuse
         """
         from logging_config import get_logger
         logger = get_logger(__name__)
         
-        client = None
+        client_created_locally = False
         try:
-            client = await self.create_client_from_session(session_string)
+            if not client:
+                client = await self.create_client_from_session(session_string)
+                client_created_locally = True
             
             # Resolve entity (chat)
             entity = None
@@ -771,7 +786,7 @@ class TelegramPhoneService:
             logger.error(f"Failed to mark as read for {chat_id}: {e}")
             return False
         finally:
-            if client:
+            if client and client_created_locally:
                 try:
                     await client.disconnect()
                 except:
@@ -780,7 +795,8 @@ class TelegramPhoneService:
     async def get_messages_read_status(
         self,
         session_string: str,
-        channel_message_ids: List[str]
+        channel_message_ids: List[str],
+        client: Optional["TelegramClient"] = None
     ) -> Dict[str, str]:
         """
         Get read status for specific messages
@@ -788,6 +804,7 @@ class TelegramPhoneService:
         Args:
             session_string: Session string
             channel_message_ids: List of Telegram message IDs to check
+            client: Optional existing TelegramClient to reuse
         
         Returns:
             Dict[message_id, status] where status is 'read' or 'delivered' or 'sent'
@@ -795,7 +812,7 @@ class TelegramPhoneService:
         from logging_config import get_logger
         logger = get_logger(__name__)
         
-        client = None
+        client_created_locally = False
         statuses = {}
         
         try:
@@ -810,7 +827,9 @@ class TelegramPhoneService:
             if not msg_ids:
                 return {}
 
-            client = await self.create_client_from_session(session_string)
+            if not client:
+                client = await self.create_client_from_session(session_string)
+                client_created_locally = True
             
             # Use get_dialogs to find the read_outbox_max_id for relevant chats
             # Optimization: First get messages to find their chats
@@ -862,7 +881,7 @@ class TelegramPhoneService:
             logger.error(f"Failed to check read status: {e}")
             return {}
         finally:
-            if client:
+            if client and client_created_locally:
                 try:
                     await client.disconnect()
                 except:
