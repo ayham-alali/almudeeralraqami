@@ -227,7 +227,9 @@ class TelegramListenerService:
                     if hasattr(sender, 'username') and sender.username:
                         sender_contact = sender.username
                     elif hasattr(sender, 'phone') and sender.phone:
-                        sender_contact = sender.phone
+                        # Normalize phone: always add + prefix
+                        phone = sender.phone
+                        sender_contact = "+" + phone if phone.isdigit() else phone
                         
                     channel_message_id = str(event.message.id)
                     

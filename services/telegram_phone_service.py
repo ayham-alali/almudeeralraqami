@@ -475,7 +475,11 @@ class TelegramPhoneService:
                         
                         if sender:
                             sender_name = f"{sender.first_name or ''} {sender.last_name or ''}".strip()
-                            sender_contact = sender.phone or (f"@{sender.username}" if sender.username else str(sender.id))
+                            # Normalize phone: always add + prefix if it looks like a phone number
+                            phone = sender.phone
+                            if phone and phone.isdigit():
+                                phone = "+" + phone
+                            sender_contact = phone or (f"@{sender.username}" if sender.username else str(sender.id))
                         
                         messages_data.append({
                             "channel_message_id": str(message.id),
