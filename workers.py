@@ -688,6 +688,20 @@ class MessagePoller:
             # Extract exclude_ids for optimization
             exclude_ids = [msg["channel_message_id"] for msg in recent_messages if msg.get("channel_message_id")]
 
+            # Try to get active client from listener service to reuse connection
+            active_client = None
+            try:
+                from services.telegram_listener_service import get_telegram_listener
+                listener = get_telegram_listener()
+                if listener.running and license_id in listener.clients:
+                    potential_client = listener.clients[license_id]
+                    # Verify it's connected
+                    if potential_client.is_connected():
+                         active_client = potential_client
+                         logger.debug(f"Reusing active Telegram client for license {license_id}")
+            except Exception as e:
+                logger.debug(f"Could not get active Telegram client: {e}")
+
             # Fetch messages with optimization
             try:
                 # If backfill, use larger limit
@@ -697,7 +711,8 @@ class MessagePoller:
                     since_hours=since_hours,
                     limit=limit,
                     exclude_ids=exclude_ids,
-                    skip_replied=is_backfill  # Skip dialogs where last message is ours (already replied)
+                    skip_replied=is_backfill,  # Skip dialogs where last message is ours (already replied)
+                    client=active_client
                 )
             except Exception as e:
                 # If the underlying Telethon client or session is invalid, avoid

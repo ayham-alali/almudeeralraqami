@@ -349,7 +349,8 @@ class TelegramPhoneService:
         limit: int = 50,
         since_hours: int = 72,
         exclude_ids: Optional[List[str]] = None,
-        skip_replied: bool = False
+        skip_replied: bool = False,
+        client: Optional["TelegramClient"] = None
     ) -> List[Dict]:
         """
         Get recent messages from Telegram account (INCOMING only)
@@ -357,9 +358,9 @@ class TelegramPhoneService:
         Args:
             session_string: Session string
             limit: Maximum number of messages to fetch
-            limit: Maximum number of messages to fetch
             since_hours: Only fetch messages from last N hours
             exclude_ids: Optional list of message IDs to skip (bandwidth optimization)
+            client: Optional existing TelegramClient to reuse
         
         Returns:
             List of message dicts (only incoming messages from other users)
@@ -368,11 +369,14 @@ class TelegramPhoneService:
         from logging_config import get_logger
         
         logger = get_logger(__name__)
-        client = None
+        # client is passed as arg or created locally
+        client_created_locally = False
         messages_data = []
         
         try:
-            client = await self.create_client_from_session(session_string)
+            if not client:
+                client = await self.create_client_from_session(session_string)
+                client_created_locally = True
             
             # Get our own user ID to filter out self-messages
             # This is a safety net in case message.out doesn't work correctly
@@ -510,7 +514,7 @@ class TelegramPhoneService:
         except Exception as e:
             raise ValueError(f"خطأ في جلب الرسائل: {str(e)}")
         finally:
-            if client:
+            if client and client_created_locally:
                 try:
                     await client.disconnect()
                 except:
