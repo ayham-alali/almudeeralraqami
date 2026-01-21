@@ -10,22 +10,30 @@ from httpx import AsyncClient, ASGITransport
 # ============ Fixtures ============
 
 @pytest.fixture
-def mock_license_dependency():
-    """Mock the get_license_from_header dependency"""
-    with patch("routes.chat_routes.get_license_from_header") as mock:
-        mock.return_value = {"license_id": 1, "key": "TEST-KEY"}
-        yield mock
-
-# ============ Inbox & Conversation List Config ============
-
-@pytest.fixture
 def app():
-    """Create a minimal app with the chat router"""
+    """Create a minimal app with the chat router and mocked license dependency"""
     from fastapi import FastAPI
     from routes.chat_routes import router
+    from dependencies import get_license_from_header
+    
     app = FastAPI()
     app.include_router(router)
-    return app
+    
+    # Override the dependency to return a mock license
+    async def mock_get_license():
+        return {"license_id": 1, "key": "TEST-KEY"}
+    
+    app.dependency_overrides[get_license_from_header] = mock_get_license
+    
+    yield app
+    
+    # Cleanup
+    app.dependency_overrides.clear()
+
+@pytest.fixture
+def mock_license_dependency():
+    """Legacy fixture - kept for backwards compatibility but no longer needed"""
+    yield None
 
 class TestInboxRoutes:
     """Tests for /api/integrations/inbox and /conversations endpoints"""
@@ -191,15 +199,18 @@ class TestChatActions:
              patch("routes.chat_routes.create_outbox_message", new_callable=AsyncMock) as mock_create, \
              patch("routes.chat_routes.approve_outbox_message", new_callable=AsyncMock) as mock_approve, \
              patch("routes.chat_routes.update_inbox_status", new_callable=AsyncMock) as mock_update, \
+             patch("models.inbox.approve_chat_messages", new_callable=AsyncMock) as mock_approve_chat, \
              patch("routes.chat_routes.send_approved_message") as mock_send_task: # Background task
             
             mock_get.return_value = {
                 "id": 50, 
                 "ai_draft_response": "Draft", 
                 "channel": "whatsapp",
-                "sender_id": "sender1"
+                "sender_id": "sender1",
+                "sender_contact": "contact1"
             }
             mock_create.return_value = 202
+            mock_approve_chat.return_value = 1
             
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:

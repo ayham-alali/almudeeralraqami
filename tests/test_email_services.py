@@ -164,12 +164,28 @@ class TestGmailOAuthService:
     
     def test_service_initialization(self):
         """Test Gmail OAuth service initializes correctly"""
-        from services.gmail_oauth_service import GmailOAuthService
+        import os
+        import sys
         
-        service = GmailOAuthService()
+        # Remove cached module if present to ensure fresh import with mocked env
+        if 'services.gmail_oauth_service' in sys.modules:
+            del sys.modules['services.gmail_oauth_service']
         
-        # Should have OAuth configuration
-        assert hasattr(service, 'client_id') or hasattr(service, 'flow')
+        # Mock ALL required environment variables for OAuth
+        # GmailOAuthService requires: GMAIL_OAUTH_CLIENT_ID, GMAIL_OAUTH_CLIENT_SECRET, GMAIL_OAUTH_REDIRECT_URI
+        with patch.dict(os.environ, {
+            'GMAIL_OAUTH_CLIENT_ID': 'test-client-id',
+            'GMAIL_OAUTH_CLIENT_SECRET': 'test-client-secret',
+            'GMAIL_OAUTH_REDIRECT_URI': 'https://test.example.com/oauth/callback'
+        }):
+            from services.gmail_oauth_service import GmailOAuthService
+            
+            service = GmailOAuthService()
+            
+            # Should have OAuth configuration
+            assert service.client_id == 'test-client-id'
+            assert service.client_secret == 'test-client-secret'
+            assert service.redirect_uri == 'https://test.example.com/oauth/callback'
 
 
 # ============ Gmail API Service ============
@@ -181,7 +197,8 @@ class TestGmailAPIService:
         """Test base64url decoding for Gmail API"""
         from services.gmail_api_service import GmailAPIService
         
-        service = GmailAPIService()
+        # Provide required access_token argument
+        service = GmailAPIService(access_token="test-access-token")
         
         # Gmail uses URL-safe base64
         encoded = "SGVsbG8gV29ybGQ"  # "Hello World" without padding

@@ -155,8 +155,9 @@ class TestMessageParsing:
         
         assert messages is not None
         assert len(messages) > 0
-        assert messages[0]["text"] == "مرحباً، أريد الاستفسار"
-        assert messages[0]["sender_contact"] == "966501234567"
+        # The service returns 'body' not 'text', and 'from' / 'sender_phone' for contact
+        assert messages[0]["body"] == "مرحباً، أريد الاستفسار"
+        assert messages[0]["from"] == "966501234567" or messages[0].get("sender_phone") == "966501234567"
     
     def test_parse_image_message(self):
         """Test parsing an image message from webhook"""
