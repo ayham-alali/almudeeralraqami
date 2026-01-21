@@ -31,6 +31,7 @@ class IntegrationAccount(BaseModel):
     display_name: str
     is_active: bool
     details: Optional[str] = None
+    auto_reply_enabled: bool = False
 
 class WorkerStatusResponse(BaseModel):
     email_polling: dict
@@ -177,6 +178,7 @@ async def list_integration_accounts(license: dict = Depends(get_license_from_hea
                 display_name=email_cfg.get("email_address") or "Gmail",
                 is_active=bool(email_cfg.get("is_active")),
                 details="Gmail OAuth",
+                auto_reply_enabled=bool(email_cfg.get("auto_reply_enabled")),
             )
         )
 
@@ -191,6 +193,7 @@ async def list_integration_accounts(license: dict = Depends(get_license_from_hea
                 display_name=display,
                 is_active=bool(telegram_cfg.get("is_active")),
                 details=telegram_cfg.get("bot_token_masked"),
+                auto_reply_enabled=bool(telegram_cfg.get("auto_reply_enabled")),
             )
         )
 
@@ -205,6 +208,7 @@ async def list_integration_accounts(license: dict = Depends(get_license_from_hea
                 display_name=display,
                 is_active=bool(phone_cfg.get("is_active", True)),
                 details=phone_cfg.get("user_username"),
+                auto_reply_enabled=bool(phone_cfg.get("auto_reply_enabled")),
             )
         )
 
@@ -219,6 +223,7 @@ async def list_integration_accounts(license: dict = Depends(get_license_from_hea
                 display_name=str(display),
                 is_active=bool(whatsapp_cfg.get("is_active")),
                 details=whatsapp_cfg.get("business_account_id"),
+                auto_reply_enabled=bool(whatsapp_cfg.get("auto_reply_enabled")),
             )
         )
 
