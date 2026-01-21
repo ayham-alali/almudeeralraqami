@@ -224,12 +224,13 @@ class TelegramListenerService:
                         sender_name = "Unknown"
                         
                     sender_contact = None
-                    if hasattr(sender, 'username') and sender.username:
-                        sender_contact = sender.username
-                    elif hasattr(sender, 'phone') and sender.phone:
+                    # FIX: Prioritize phone to match telegram_phone_service and prevent duplicates
+                    if hasattr(sender, 'phone') and sender.phone:
                         # Normalize phone: always add + prefix
                         phone = sender.phone
                         sender_contact = "+" + phone if phone.isdigit() else phone
+                    elif hasattr(sender, 'username') and sender.username:
+                        sender_contact = sender.username
                         
                     channel_message_id = str(event.message.id)
                     
