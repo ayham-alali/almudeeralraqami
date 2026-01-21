@@ -69,6 +69,32 @@ async def save_inbox_message(
 
     async with get_db() as db:
 
+        # ---------------------------------------------------------
+        # Canonical Identity Lookup (Prevent Duplicates)
+        # ---------------------------------------------------------
+        # If we already know this sender_id (Telegram ID, etc.), use the 
+        # EXISTING sender_contact to ensure conversation threading works 
+        # even if the new message has a different format (e.g. username vs phone).
+        if sender_id and license_id:
+            # Check for existing contact for this sender_id
+            existing_row = await fetch_one(
+                db,
+                """
+                SELECT sender_contact 
+                FROM inbox_messages 
+                WHERE license_key_id = ? AND sender_id = ? 
+                AND sender_contact IS NOT NULL AND sender_contact != ''
+                LIMIT 1
+                """,
+                [license_id, sender_id]
+            )
+            
+            if existing_row and existing_row['sender_contact']:
+                canonical_contact = existing_row['sender_contact']
+                # If incoming contact differs (e.g. is 'username' but we have '+phone'), use canonical
+                if sender_contact != canonical_contact:
+                    sender_contact = canonical_contact
+
         await execute_sql(
             db,
             """
