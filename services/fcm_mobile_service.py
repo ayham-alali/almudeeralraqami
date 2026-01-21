@@ -538,6 +538,17 @@ async def send_fcm_to_license(
     """
     from db_helper import get_db, fetch_all, fetch_one, execute_sql, commit_db
     
+    # Check if user has notifications enabled
+    try:
+        from models.preferences import get_preferences
+        prefs = await get_preferences(license_id)
+        if not prefs.get("notifications_enabled", True):
+            logger.info(f"FCM: Notifications disabled for license {license_id}, skipping push")
+            return 0
+    except Exception as e:
+        # If we can't check preferences, proceed with sending (fail-open)
+        logger.warning(f"FCM: Could not check notification preferences: {e}")
+    
     sent_count = 0
     expired_ids = []
     

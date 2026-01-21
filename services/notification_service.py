@@ -598,7 +598,8 @@ async def send_webhook_notification(
 async def send_notification(
     license_id: int,
     payload: NotificationPayload,
-    channels: List[NotificationChannel] = None
+    channels: List[NotificationChannel] = None,
+    skip_preference_check: bool = False  # Allow bypassing for system notifications
 ) -> dict:
     """
     Main function to send notifications through multiple channels
@@ -608,6 +609,16 @@ async def send_notification(
     # Default to in-app only
     if channels is None:
         channels = [NotificationChannel.IN_APP]
+    
+    # Check if user has notifications enabled (for mobile push)
+    notifications_enabled = True
+    if not skip_preference_check:
+        try:
+            from models.preferences import get_preferences
+            prefs = await get_preferences(license_id)
+            notifications_enabled = prefs.get("notifications_enabled", True)
+        except Exception as e:
+            logger.warning(f"Notification Service: Could not check preferences: {e}")
     
     # Throttling check (Flood Protection)
     sender_contact = payload.metadata.get("sender_contact") if payload.metadata else None
@@ -637,38 +648,43 @@ async def send_notification(
             )
             results["in_app"] = {"success": True, "id": notif_obj_id}
 
-            # 2. Trigger Mobile Push (FCM)
+            # 2. Trigger Mobile Push (FCM) - only if notifications enabled
             # We assume IN_APP implies a desire to reach the user's device
-            try:
-                from services.fcm_mobile_service import send_fcm_to_license
-                fcm_count = await send_fcm_to_license(
-                    license_id=license_id,
-                    title=payload.title,
-                    body=payload.message,
-                    link=payload.link,
-                    data=payload.metadata,
-                    image=payload.image,
-                    notification_id=notif_obj_id
-                )
-                results["mobile_push"] = {"success": True, "count": fcm_count}
-            except Exception as e:
-                # Log but don't fail the whole request
-                results["mobile_push"] = {"success": False, "error": str(e)}
-
-            # 3. Trigger Web Push
-            try:
-                from services.push_service import send_push_to_license, WEBPUSH_AVAILABLE
-                if WEBPUSH_AVAILABLE:
-                    web_count = await send_push_to_license(
+            if notifications_enabled:
+                try:
+                    from services.fcm_mobile_service import send_fcm_to_license
+                    fcm_count = await send_fcm_to_license(
                         license_id=license_id,
                         title=payload.title,
-                        message=payload.message,
-                        link=payload.link or "/dashboard/notifications",
+                        body=payload.message,
+                        link=payload.link,
+                        data=payload.metadata,
+                        image=payload.image,
                         notification_id=notif_obj_id
                     )
-                    results["web_push"] = {"success": True, "count": web_count}
-            except Exception as e:
-                results["web_push"] = {"success": False, "error": str(e)}
+                    results["mobile_push"] = {"success": True, "count": fcm_count}
+                except Exception as e:
+                    # Log but don't fail the whole request
+                    results["mobile_push"] = {"success": False, "error": str(e)}
+
+                # 3. Trigger Web Push
+                try:
+                    from services.push_service import send_push_to_license, WEBPUSH_AVAILABLE
+                    if WEBPUSH_AVAILABLE:
+                        web_count = await send_push_to_license(
+                            license_id=license_id,
+                            title=payload.title,
+                            message=payload.message,
+                            link=payload.link or "/dashboard/notifications",
+                            notification_id=notif_obj_id
+                        )
+                        results["web_push"] = {"success": True, "count": web_count}
+                except Exception as e:
+                    results["web_push"] = {"success": False, "error": str(e)}
+            else:
+                results["mobile_push"] = {"success": True, "skipped": "notifications_disabled"}
+                results["web_push"] = {"success": True, "skipped": "notifications_disabled"}
+                logger.info(f"Notification Service: Push notifications skipped for license {license_id} (disabled)")
 
         except Exception as e:
             results["in_app"] = {"success": False, "error": str(e)}

@@ -91,6 +91,24 @@ def build_system_prompt(preferences: Optional[Dict[str, Any]] = None) -> str:
     else:
         length_hint = "حافظ على طول رد متوسط وواضح (حوالي 3 إلى 6 أسطر)."
 
+    # Language preferences
+    preferred_languages = preferences.get("preferred_languages") or []
+    language_hint = ""
+    if preferred_languages:
+        lang_names = {
+            "ar": "العربية",
+            "en": "الإنجليزية",
+            "fr": "الفرنسية",
+            "es": "الإسبانية",
+            "de": "الألمانية",
+            "tr": "التركية",
+        }
+        lang_list = [lang_names.get(lang, lang) for lang in preferred_languages]
+        if len(lang_list) == 1:
+            language_hint = f"\nاللغة المفضلة للرد: {lang_list[0]}. إذا كانت لغة الرسالة الواردة من ضمن اللغات المفضلة، رد بنفس لغة الرسالة. وإلا، رد باللغة المفضلة الأولى."
+        else:
+            language_hint = f"\nاللغات المفضلة للرد: {', '.join(lang_list)}. رد بنفس لغة الرسالة الواردة إن كانت من ضمن اللغات المفضلة، وإلا رد بأول لغة في القائمة."
+
     return (
         BASE_SYSTEM_PROMPT
         + "\n\n"
@@ -100,6 +118,7 @@ def build_system_prompt(preferences: Optional[Dict[str, Any]] = None) -> str:
         + tone_desc
         + "\n"
         + length_hint
+        + language_hint
     )
 
 
