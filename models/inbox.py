@@ -178,6 +178,27 @@ async def update_inbox_analysis(
                 message_row["sender_name"],
                 message_row["channel"]
             )
+            
+            # Broadcast via WebSocket for real-time mobile updates
+            # This enables WhatsApp/Telegram-like instant message appearance
+            try:
+                from services.websocket_manager import broadcast_new_message
+                await broadcast_new_message(
+                    message_row["license_key_id"],
+                    {
+                        "conversation_id": message_id,
+                        "sender_contact": message_row["sender_contact"],
+                        "sender_name": message_row["sender_name"],
+                        "body": summary[:150] if summary else "",  # Preview text
+                        "channel": message_row["channel"],
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "status": "analyzed",
+                    }
+                )
+            except Exception as e:
+                # Don't fail the analysis if WebSocket broadcast fails
+                from logging_config import get_logger
+                get_logger(__name__).warning(f"WebSocket broadcast failed: {e}")
 
 
 async def get_inbox_messages(
