@@ -273,6 +273,8 @@ async def _init_postgresql_tables(conn):
             license_key_id INTEGER,
             name VARCHAR(255),
             contact VARCHAR(255) UNIQUE NOT NULL,
+            phone VARCHAR(255),
+            email VARCHAR(255),
             type VARCHAR(50) DEFAULT 'Regular',
             total_spend REAL DEFAULT 0.0,
             notes TEXT,
@@ -281,6 +283,12 @@ async def _init_postgresql_tables(conn):
             FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
         )
     """))
+
+    # Migration: Ensure 'contact' column exists if the table was created by older logic
+    try:
+        await conn.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS contact VARCHAR(255) UNIQUE")
+    except Exception:
+        pass
 
     # Orders table
     await conn.execute(_adapt_sql_for_db("""

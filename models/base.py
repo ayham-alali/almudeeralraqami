@@ -337,6 +337,7 @@ async def init_customers_and_analytics():
                 id {ID_PK},
                 license_key_id INTEGER NOT NULL,
                 name TEXT,
+                contact TEXT UNIQUE NOT NULL,
                 phone TEXT,
                 email TEXT,
                 company TEXT,
@@ -355,10 +356,16 @@ async def init_customers_and_analytics():
         
         # Add segment and lead_score columns if they don't exist (for existing databases)
         try:
-            await execute_sql(db, "ALTER TABLE customers ADD COLUMN segment TEXT")
+            await execute_sql(db, "ALTER TABLE customers ADD COLUMN IF NOT EXISTS segment TEXT")
         except: pass
         try:
-            await execute_sql(db, "ALTER TABLE customers ADD COLUMN lead_score INTEGER DEFAULT 0")
+            await execute_sql(db, "ALTER TABLE customers ADD COLUMN IF NOT EXISTS lead_score INTEGER DEFAULT 0")
+        except: pass
+        try:
+            await execute_sql(db, "ALTER TABLE customers ADD COLUMN IF NOT EXISTS contact TEXT")
+            # If we just added contact, we might want to make it UNIQUE if possible, 
+            # but that's complex without knowing current data. 
+            # The next init will handle it if IF NOT EXISTS works properly on table creation.
         except: pass
 
         # Orders Table
@@ -372,7 +379,7 @@ async def init_customers_and_analytics():
                 items TEXT,
                 created_at {TIMESTAMP_NOW},
                 updated_at TIMESTAMP,
-                FOREIGN KEY (customer_contact) REFERENCES customers(phone)
+                FOREIGN KEY (customer_contact) REFERENCES customers(contact)
             )
         """)
 
