@@ -361,6 +361,21 @@ async def init_customers_and_analytics():
             await execute_sql(db, "ALTER TABLE customers ADD COLUMN lead_score INTEGER DEFAULT 0")
         except: pass
 
+        # Orders Table
+        await execute_sql(db, f"""
+            CREATE TABLE IF NOT EXISTS orders (
+                id {ID_PK},
+                order_ref TEXT UNIQUE NOT NULL,
+                customer_contact TEXT,
+                status TEXT DEFAULT 'Pending',
+                total_amount REAL,
+                items TEXT,
+                created_at {TIMESTAMP_NOW},
+                updated_at TIMESTAMP,
+                FOREIGN KEY (customer_contact) REFERENCES customers(phone)
+            )
+        """)
+
         # Link inbox messages to customers
         await execute_sql(db, """
             CREATE TABLE IF NOT EXISTS customer_messages (

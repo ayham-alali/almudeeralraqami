@@ -266,6 +266,37 @@ async def _init_postgresql_tables(conn):
         )
     """))
 
+    # Customers table (for detailed profile)
+    await conn.execute(_adapt_sql_for_db("""
+        CREATE TABLE IF NOT EXISTS customers (
+            id SERIAL PRIMARY KEY,
+            license_key_id INTEGER,
+            name VARCHAR(255),
+            contact VARCHAR(255) UNIQUE NOT NULL,
+            type VARCHAR(50) DEFAULT 'Regular',
+            total_spend REAL DEFAULT 0.0,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP,
+            FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
+        )
+    """))
+
+    # Orders table
+    await conn.execute(_adapt_sql_for_db("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id SERIAL PRIMARY KEY,
+            order_ref VARCHAR(255) UNIQUE NOT NULL,
+            customer_contact VARCHAR(255),
+            status VARCHAR(50) DEFAULT 'Pending',
+            total_amount REAL,
+            items TEXT,
+            created_at TIMESTAMP DEFAULT NOW(),
+            updated_at TIMESTAMP,
+            FOREIGN KEY (customer_contact) REFERENCES customers(contact)
+        )
+    """))
+
     # Update Events table (Analytics)
     await conn.execute(_adapt_sql_for_db("""
         CREATE TABLE IF NOT EXISTS update_events (

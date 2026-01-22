@@ -462,32 +462,60 @@ async def delete_subscription(
             if DB_TYPE == "postgresql":
                 async with db.transaction():
                     # Delete deep dependencies first: Orders -> Customers
-                    await execute_sql(db, "DELETE FROM orders WHERE customer_contact IN (SELECT contact FROM customers WHERE license_key_id = $1)", [license_id])
-                    await execute_sql(db, "DELETE FROM customers WHERE license_key_id = $1", [license_id])
+                    try:
+                        await execute_sql(db, "DELETE FROM orders WHERE customer_contact IN (SELECT contact FROM customers WHERE license_key_id = $1)", [license_id])
+                    except Exception as e:
+                        logger.warning(f"Note: Could not delete from orders for subscription {license_id}: {e}")
+                        
+                    try:
+                        await execute_sql(db, "DELETE FROM customers WHERE license_key_id = $1", [license_id])
+                    except Exception as e:
+                        logger.warning(f"Note: Could not delete from customers for subscription {license_id}: {e}")
                     
                     # Delete service configs and logs
-                    await execute_sql(db, "DELETE FROM usage_logs WHERE license_key_id = $1", [license_id])
-                    await execute_sql(db, "DELETE FROM crm_entries WHERE license_key_id = $1", [license_id])
-                    await execute_sql(db, "DELETE FROM email_configs WHERE license_key_id = $1", [license_id])
-                    await execute_sql(db, "DELETE FROM telegram_configs WHERE license_key_id = $1", [license_id])
+                    try:
+                        await execute_sql(db, "DELETE FROM usage_logs WHERE license_key_id = $1", [license_id])
+                        await execute_sql(db, "DELETE FROM crm_entries WHERE license_key_id = $1", [license_id])
+                        await execute_sql(db, "DELETE FROM email_configs WHERE license_key_id = $1", [license_id])
+                        await execute_sql(db, "DELETE FROM telegram_configs WHERE license_key_id = $1", [license_id])
+                    except Exception as e:
+                        logger.warning(f"Note: Could not delete some dependent records for subscription {license_id}: {e}")
                     
                     # Fix: Delete user preferences to avoid FK violation
-                    await delete_preferences(license_id, db=db)
+                    try:
+                        await delete_preferences(license_id, db=db)
+                    except Exception as e:
+                        logger.warning(f"Note: Could not delete preferences for subscription {license_id}: {e}")
                     
                     # Finally delete the subscription
                     await execute_sql(db, "DELETE FROM license_keys WHERE id = $1", [license_id])
             else:
                 # SQLite (no async transaction context manager in the same way, rely on final commit)
                 # Delete deep dependencies
-                await execute_sql(db, "DELETE FROM orders WHERE customer_contact IN (SELECT contact FROM customers WHERE license_key_id = ?)", [license_id])
-                await execute_sql(db, "DELETE FROM customers WHERE license_key_id = ?", [license_id])
+                try:
+                    await execute_sql(db, "DELETE FROM orders WHERE customer_contact IN (SELECT contact FROM customers WHERE license_key_id = ?)", [license_id])
+                except Exception as e:
+                    logger.warning(f"Note: Could not delete from orders for subscription {license_id}: {e}")
+
+                try:
+                    await execute_sql(db, "DELETE FROM customers WHERE license_key_id = ?", [license_id])
+                except Exception as e:
+                    logger.warning(f"Note: Could not delete from customers for subscription {license_id}: {e}")
                 
-                await execute_sql(db, "DELETE FROM usage_logs WHERE license_key_id = ?", [license_id])
-                await execute_sql(db, "DELETE FROM crm_entries WHERE license_key_id = ?", [license_id])
-                await execute_sql(db, "DELETE FROM email_configs WHERE license_key_id = ?", [license_id])
-                await execute_sql(db, "DELETE FROM telegram_configs WHERE license_key_id = ?", [license_id])
+                try:
+                    await execute_sql(db, "DELETE FROM usage_logs WHERE license_key_id = ?", [license_id])
+                    await execute_sql(db, "DELETE FROM crm_entries WHERE license_key_id = ?", [license_id])
+                    await execute_sql(db, "DELETE FROM email_configs WHERE license_key_id = ?", [license_id])
+                    await execute_sql(db, "DELETE FROM telegram_configs WHERE license_key_id = ?", [license_id])
+                except Exception as e:
+                    logger.warning(f"Note: Could not delete some dependent records for subscription {license_id}: {e}")
+
                 # Fix: Delete user preferences to avoid FK violation
-                await delete_preferences(license_id, db=db)
+                try:
+                    await delete_preferences(license_id, db=db)
+                except Exception as e:
+                    logger.warning(f"Note: Could not delete preferences for subscription {license_id}: {e}")
+
                 await execute_sql(db, "DELETE FROM license_keys WHERE id = ?", [license_id])
             
             await commit_db(db)
