@@ -210,52 +210,52 @@ async def save_fcm_token(
     from db_helper import get_db, fetch_one, execute_sql, commit_db
     
     async with get_db() as db:
-        existing = None
-        
-        # Strategy 1: Match by device_id (preferred)
-        if device_id:
-            existing = await fetch_one(
-                db,
-                "SELECT id FROM fcm_tokens WHERE device_id = ? AND license_key_id = ?",
-                [device_id, license_id]
-            )
+        try:
+            existing = None
             
-        # Strategy 2: Match by token (fallback/migration)
-        if not existing:
-             existing = await fetch_one(
-                db,
-                "SELECT id FROM fcm_tokens WHERE token = ?",
-                [token]
-            )
-        
-        if existing:
-            # Update existing token
-            await execute_sql(
-                db,
-                """
-                UPDATE fcm_tokens 
-                SET license_key_id = ?, token = ?, platform = ?, device_id = ?, is_active = TRUE, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                [license_id, token, platform, device_id, existing["id"]]
-            )
-            
-            # Aggressive cleanup: If we have a device_id, deactivate all tokens for this license that DON'T have a device_id
+            # Strategy 1: Match by device_id (preferred)
             if device_id:
-                await execute_sql(
+                existing = await fetch_one(
                     db,
-                    "UPDATE fcm_tokens SET is_active = FALSE WHERE license_key_id = ? AND device_id IS NULL",
-                    [license_id]
+                    "SELECT id FROM fcm_tokens WHERE device_id = ? AND license_key_id = ?",
+                    [device_id, license_id]
+                )
+                
+            # Strategy 2: Match by token (fallback/migration)
+            if not existing:
+                 existing = await fetch_one(
+                    db,
+                    "SELECT id FROM fcm_tokens WHERE token = ?",
+                    [token]
                 )
             
-            await commit_db(db)
-            logger.info(f"FCM: Token updated for license {license_id} (device_id: {device_id})")
-            return existing["id"]
-        
-        # Create new token
-        from db_helper import DB_TYPE
-        
-        try:
+            if existing:
+                # Update existing token record. 
+                # Note: This might still trigger a unique violation if 'token' is moved between records.
+                await execute_sql(
+                    db,
+                    """
+                    UPDATE fcm_tokens 
+                    SET license_key_id = ?, token = ?, platform = ?, device_id = ?, is_active = TRUE, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    [license_id, token, platform, device_id, existing["id"]]
+                )
+                
+                # Aggressive cleanup: If we have a device_id, deactivate all tokens for this license that DON'T have a device_id
+                if device_id:
+                    await execute_sql(
+                        db,
+                        "UPDATE fcm_tokens SET is_active = FALSE WHERE license_key_id = ? AND device_id IS NULL",
+                        [license_id]
+                    )
+                
+                await commit_db(db)
+                logger.info(f"FCM: Token updated for license {license_id} (device_id: {device_id})")
+                return existing["id"]
+            
+            # Create new token path
+            from db_helper import DB_TYPE
             if DB_TYPE == "postgresql":
                 # PostgreSQL-native UPSERT: atomic and handles race conditions at DB level
                 await execute_sql(
@@ -273,27 +273,36 @@ async def save_fcm_token(
                     [license_id, token, platform, device_id]
                 )
             else:
-                # SQLite fallback
+                # SQLite fallback path
                 await execute_sql(
                     db,
-                    """
-                    INSERT INTO fcm_tokens (license_key_id, token, platform, device_id)
-                    VALUES (?, ?, ?, ?)
-                    """,
+                    "INSERT INTO fcm_tokens (license_key_id, token, platform, device_id) VALUES (?, ?, ?, ?)",
                     [license_id, token, platform, device_id]
                 )
-        except Exception as e:
-            # Handle race condition: if another request inserted this token simultaneously
-            # even if it's wrapped in an ExceptionGroup (Python 3.11+)
-            error_str = str(e).lower()
+
+            # Cleanup for new tokens
+            if device_id:
+                 await execute_sql(
+                    db,
+                    "UPDATE fcm_tokens SET is_active = FALSE WHERE license_key_id = ? AND device_id IS NULL",
+                    [license_id]
+                )
             
-            # Recursive check for ExceptionGroup or just check the full string
-            if "duplicate" in error_str or "unique" in error_str or "already exists" in error_str:
-                logger.warning(f"FCM: Race condition/Duplicate detected for token {token[:20]}..., falling back to update")
+            # Fetch final row ID
+            row = await fetch_one(db, "SELECT id FROM fcm_tokens WHERE token = ?", [token])
+            await commit_db(db)
+            logger.info(f"FCM: New token registered for license {license_id}")
+            return row["id"] if row else 0
+
+        except Exception as e:
+            # Handle ANY duplicate/unique constraint violation regardless of where it occurred (INSERT or UPDATE)
+            # This catches race conditions and ExceptionGroup wrappers.
+            error_str = str(e).lower()
+            if any(msg in error_str for msg in ["duplicate", "unique", "already exists"]):
+                logger.warning(f"FCM: Collision detected for token {token[:20]}..., resolving via forced update")
                 
-                # Re-fetch the ID to update the existing record (safety fallback)
+                # Forced cleanup: Find the record that HAS the token and update it (or delete it if it's not the one we want)
                 row = await fetch_one(db, "SELECT id FROM fcm_tokens WHERE token = ?", [token])
-                
                 if row:
                     await execute_sql(
                         db,
@@ -303,27 +312,9 @@ async def save_fcm_token(
                     await commit_db(db)
                     return row["id"]
             
-            # If it's another error, re-raise it
-            logger.error(f"FCM Registration error: {e}")
+            # Log and re-raise other errors
+            logger.error(f"FCM Registration Critical Error: {e}")
             raise e
-        
-        # Aggressive cleanup for new tokens too
-        if device_id:
-             await execute_sql(
-                db,
-                "UPDATE fcm_tokens SET is_active = FALSE WHERE license_key_id = ? AND device_id IS NULL",
-                [license_id]
-            )
-        
-        # Return ID
-        if device_id:
-             row = await fetch_one(db, "SELECT id FROM fcm_tokens WHERE device_id = ? AND license_key_id = ?", [device_id, license_id])
-        else:
-             row = await fetch_one(db, "SELECT id FROM fcm_tokens WHERE token = ?", [token])
-
-        await commit_db(db)
-        logger.info(f"FCM: New token registered for license {license_id}")
-        return row["id"] if row else 0
 
 
 async def remove_fcm_token(token: str) -> bool:
