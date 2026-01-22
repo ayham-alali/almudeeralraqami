@@ -608,6 +608,10 @@ async def _get_sender_aliases(db, license_id: int, sender_contact: str) -> tuple
     Returns:
         Tuple of (all_contacts: set, all_ids: set)
     """
+    # Handle None sender_contact
+    if not sender_contact:
+        return set(), set()
+    
     # Handle tg: prefix
     check_ids = [sender_contact]
     if sender_contact.startswith("tg:"):
