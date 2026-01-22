@@ -777,25 +777,27 @@ async def get_conversation_messages_cursor(
             # For scrolling up (loading older messages)
             if cursor_created_at and cursor_id:
                 query = f"""
-                    SELECT * FROM inbox_messages
+                    SELECT *, COALESCE(received_at, created_at) as effective_ts 
+                    FROM inbox_messages
                     WHERE license_key_id = ?
                     AND ({sender_where})
                     AND status != 'pending'
                     AND deleted_at IS NULL
-                    AND (created_at < ? OR (created_at = ? AND id < ?))
-                    ORDER BY created_at DESC, id DESC
+                    AND (COALESCE(received_at, created_at) < ? OR (COALESCE(received_at, created_at) = ? AND id < ?))
+                    ORDER BY effective_ts DESC, id DESC
                     LIMIT ?
                 """
                 params = base_params + [cursor_created_at, cursor_created_at, cursor_id, limit + 1]
             else:
                 # No cursor - get newest messages first (bottom of chat)
                 query = f"""
-                    SELECT * FROM inbox_messages
+                    SELECT *, COALESCE(received_at, created_at) as effective_ts 
+                    FROM inbox_messages
                     WHERE license_key_id = ?
                     AND ({sender_where})
                     AND status != 'pending'
                     AND deleted_at IS NULL
-                    ORDER BY created_at DESC, id DESC
+                    ORDER BY effective_ts DESC, id DESC
                     LIMIT ?
                 """
                 params = base_params + [limit + 1]
@@ -803,13 +805,14 @@ async def get_conversation_messages_cursor(
             # For loading newer messages (real-time updates)
             if cursor_created_at and cursor_id:
                 query = f"""
-                    SELECT * FROM inbox_messages
+                    SELECT *, COALESCE(received_at, created_at) as effective_ts 
+                    FROM inbox_messages
                     WHERE license_key_id = ?
                     AND ({sender_where})
                     AND status != 'pending'
                     AND deleted_at IS NULL
-                    AND (created_at > ? OR (created_at = ? AND id > ?))
-                    ORDER BY created_at ASC, id ASC
+                    AND (COALESCE(received_at, created_at) > ? OR (COALESCE(received_at, created_at) = ? AND id > ?))
+                    ORDER BY effective_ts ASC, id ASC
                     LIMIT ?
                 """
                 params = base_params + [cursor_created_at, cursor_created_at, cursor_id, limit + 1]
@@ -833,7 +836,8 @@ async def get_conversation_messages_cursor(
                 # Cursor for loading even newer messages  
                 oldest = messages[-1]
             
-            ts = oldest.get("created_at")
+            # Use effective_ts for the cursor (received_at fallback to created_at)
+            ts = oldest.get("received_at") or oldest.get("created_at")
             if hasattr(ts, 'isoformat'):
                 ts = ts.isoformat()
             cursor_str = f"{ts}_{oldest['id']}"
@@ -1118,13 +1122,14 @@ async def get_full_chat_history(
                 subject, body, 
                 intent, urgency, sentiment, language, dialect,
                 ai_summary, ai_draft_response, status,
-                created_at, received_at
+                created_at, received_at,
+                COALESCE(received_at, created_at) as effective_ts
             FROM inbox_messages
             WHERE license_key_id = ?
             AND ({sender_where})
             AND status != 'pending'
             AND deleted_at IS NULL
-            ORDER BY created_at ASC
+            ORDER BY effective_ts ASC
             LIMIT ?
             """,
             inbox_params
