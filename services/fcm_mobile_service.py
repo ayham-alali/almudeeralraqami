@@ -253,14 +253,36 @@ async def save_fcm_token(
             return existing["id"]
         
         # Create new token
-        await execute_sql(
-            db,
-            """
-            INSERT INTO fcm_tokens (license_key_id, token, platform, device_id)
-            VALUES (?, ?, ?, ?)
-            """,
-            [license_id, token, platform, device_id]
-        )
+        try:
+            await execute_sql(
+                db,
+                """
+                INSERT INTO fcm_tokens (license_key_id, token, platform, device_id)
+                VALUES (?, ?, ?, ?)
+                """,
+                [license_id, token, platform, device_id]
+            )
+        except Exception as e:
+            # Handle race condition: if another request inserted this token simultaneously
+            if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                logger.debug(f"FCM: Race condition detected for token {token[:20]}..., falling back to update")
+                # Re-fetch the ID to update the existing record
+                if device_id:
+                    row = await fetch_one(db, "SELECT id FROM fcm_tokens WHERE device_id = ? AND license_key_id = ?", [device_id, license_id])
+                else:
+                    row = await fetch_one(db, "SELECT id FROM fcm_tokens WHERE token = ?", [token])
+                
+                if row:
+                    await execute_sql(
+                        db,
+                        "UPDATE fcm_tokens SET license_key_id = ?, token = ?, platform = ?, device_id = ?, is_active = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        [license_id, token, platform, device_id, row["id"]]
+                    )
+                    await commit_db(db)
+                    return row["id"]
+            
+            # If it's another error, re-raise it
+            raise e
         
         # Aggressive cleanup for new tokens too
         if device_id:
