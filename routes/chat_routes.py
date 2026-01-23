@@ -49,6 +49,8 @@ router = APIRouter(prefix="/api/integrations", tags=["Chat"])
 class ApprovalRequest(BaseModel):
     action: str = Field(..., description="approve or ignore")
     edited_body: Optional[str] = None
+    reply_to_platform_id: Optional[str] = None
+    reply_to_body_preview: Optional[str] = None
 
 class ForwardRequest(BaseModel):
     target_channel: str
@@ -150,13 +152,16 @@ async def get_conversation_detail(
         "lead_score": lead_score
     }
 
-@router.post("/conversations/{sender_contact:path}/read")
-async def mark_conversation_as_read_route(
+@router.post("/conversations/{sender_contact:path}/typing")
+async def send_typing_indicator(
     sender_contact: str,
+    request: Request,
     license: dict = Depends(get_license_from_header)
 ):
-    from models.inbox import mark_chat_read
-    await mark_chat_read(license["license_id"], sender_contact)
+    from services.websocket_manager import broadcast_typing_indicator
+    data = await request.json()
+    is_typing = data.get("is_typing", False)
+    await broadcast_typing_indicator(license["license_id"], sender_contact, is_typing)
     return {"success": True}
 
 @router.post("/conversations/{sender_contact:path}/send")
@@ -169,6 +174,9 @@ async def send_chat_message(
     data = await request.json()
     body = data.get("message", "").strip()
     attachments = data.get("attachments", [])
+    reply_to_platform_id = data.get("reply_to_platform_id")
+    reply_to_body_preview = data.get("reply_to_body_preview")
+    
     if not body and not attachments: raise HTTPException(status_code=400, detail="الرسالة فارغة")
     
     history = await get_full_chat_history(license["license_id"], sender_contact, limit=1)
@@ -184,7 +192,9 @@ async def send_chat_message(
         body=body,
         recipient_id=recipient_id,
         recipient_email=sender_contact,
-        attachments=attachments or None
+        attachments=attachments or None,
+        reply_to_platform_id=reply_to_platform_id,
+        reply_to_body_preview=reply_to_body_preview
     )
     
     await approve_outbox_message(outbox_id, body)
@@ -219,7 +229,9 @@ async def approve_chat_message(
             channel=message["channel"],
             body=body,
             recipient_id=message.get("sender_id"),
-            recipient_email=message.get("sender_contact")
+            recipient_email=message.get("sender_contact"),
+            reply_to_platform_id=approval.reply_to_platform_id or message.get("channel_message_id"),
+            reply_to_body_preview=approval.reply_to_body_preview
         )
         await approve_outbox_message(outbox_id, body)
         await update_inbox_status(message_id, "approved")

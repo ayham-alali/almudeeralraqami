@@ -18,7 +18,14 @@ async def save_inbox_message(
     subject: str = None,
     channel_message_id: str = None,
     received_at: datetime = None,
-    attachments: Optional[List[dict]] = None
+    attachments: Optional[List[dict]] = None,
+    reply_to_platform_id: str = None,
+    reply_to_body_preview: str = None,
+    reply_to_sender_name: str = None,
+    reply_to_id: int = None,
+    platform_message_id: str = None,
+    platform_status: str = 'received',
+    original_sender: str = None
 ) -> int:
     """Save incoming message to inbox (SQLite & PostgreSQL compatible)."""
 
@@ -100,8 +107,10 @@ async def save_inbox_message(
             """
             INSERT INTO inbox_messages 
                 (license_key_id, channel, channel_message_id, sender_id, sender_name,
-                 sender_contact, subject, body, received_at, attachments)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 sender_contact, subject, body, received_at, attachments,
+                 reply_to_platform_id, reply_to_body_preview, reply_to_sender_name,
+                 reply_to_id, platform_message_id, platform_status, original_sender)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 license_id,
@@ -113,7 +122,14 @@ async def save_inbox_message(
                 subject,
                 body,
                 ts_value,
-                attachments_json
+                attachments_json,
+                reply_to_platform_id,
+                reply_to_body_preview,
+                reply_to_sender_name,
+                reply_to_id,
+                platform_message_id,
+                platform_status,
+                original_sender
             ],
         )
 
@@ -326,7 +342,9 @@ async def create_outbox_message(
     recipient_id: str = None,
     recipient_email: str = None,
     subject: str = None,
-    attachments: Optional[List[dict]] = None
+    attachments: Optional[List[dict]] = None,
+    reply_to_platform_id: Optional[str] = None,
+    reply_to_body_preview: Optional[str] = None
 ) -> int:
     """Create outbox message for approval (DB agnostic)."""
     
@@ -341,10 +359,15 @@ async def create_outbox_message(
             """
             INSERT INTO outbox_messages 
                 (inbox_message_id, license_key_id, channel, recipient_id,
-                 recipient_email, subject, body, attachments)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 recipient_email, subject, body, attachments,
+                 reply_to_platform_id, reply_to_body_preview)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [inbox_message_id, license_id, channel, recipient_id, recipient_email, subject, body, attachments_json],
+            [
+                inbox_message_id, license_id, channel, recipient_id, 
+                recipient_email, subject, body, attachments_json,
+                reply_to_platform_id, reply_to_body_preview
+            ],
         )
 
         row = await fetch_one(
@@ -667,6 +690,15 @@ def _parse_message_row(row: dict) -> dict:
     
     # Also handle outbox messages if they have attachments
     # (some queries might return both or have different column names)
+    
+    # Ensure numerical IDs are integers
+    for id_col in ["id", "license_key_id", "inbox_message_id", "reply_to_id", "unread_count", "message_count"]:
+        if row.get(id_col) is not None:
+            try:
+                row[id_col] = int(row[id_col])
+            except (ValueError, TypeError):
+                pass
+                
     return row
 
 

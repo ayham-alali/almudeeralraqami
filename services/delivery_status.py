@@ -114,8 +114,7 @@ async def update_delivery_status(
             
             # Broadcast status update via WebSocket
             try:
-                from services.websocket_manager import get_websocket_manager
-                manager = get_websocket_manager()
+                from services.websocket_manager import broadcast_message_status_update
                 
                 # Get license_id for broadcasting
                 msg = await fetch_one(
@@ -125,17 +124,14 @@ async def update_delivery_status(
                 )
                 
                 if msg:
-                    await manager.broadcast_to_license(
+                    await broadcast_message_status_update(
                         msg["license_key_id"],
                         {
-                            "event": "delivery_status",
-                            "data": {
-                                "outbox_id": outbox_id,
-                                "inbox_message_id": inbox_message_id,
-                                "platform_message_id": platform_message_id,
-                                "status": status,
-                                "timestamp": ts_value if isinstance(ts_value, str) else ts_value.isoformat()
-                            }
+                            "outbox_id": outbox_id,
+                            "inbox_message_id": inbox_message_id,
+                            "platform_message_id": platform_message_id,
+                            "status": status,
+                            "timestamp": ts_value if isinstance(ts_value, str) else ts_value.isoformat()
                         }
                     )
             except Exception as ws_error:

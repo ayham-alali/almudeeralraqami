@@ -406,3 +406,27 @@ async def broadcast_conversation_deleted(license_id: int, sender_contact: str):
             "sender_contact": sender_contact
         }
     ))
+
+
+async def broadcast_typing_indicator(license_id: int, sender_contact: str, is_typing: bool):
+    """Broadcast typing indicator for a specific conversation"""
+    manager = get_websocket_manager()
+    await manager.send_to_license(license_id, WebSocketMessage(
+        event="typing_indicator",
+        data={
+            "sender_contact": sender_contact,
+            "is_typing": is_typing
+        }
+    ))
+
+
+async def broadcast_message_status_update(license_id: int, status_data: Dict[str, Any]):
+    """
+    Broadcast message delivery status update.
+    Expected data: {outbox_id, inbox_message_id, platform_message_id, status, timestamp}
+    """
+    manager = get_websocket_manager()
+    await manager.send_to_license(license_id, WebSocketMessage(
+        event="delivery_status",
+        data=status_data
+    ))
