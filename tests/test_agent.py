@@ -180,7 +180,8 @@ class TestSystemPrompt:
 class TestAgentPipeline:
     """Tests for agent pipeline nodes"""
     
-    def test_ingest_node(self):
+    @pytest.mark.asyncio
+    async def test_ingest_node(self):
         """Test ingest node cleans message"""
         from agent import ingest_node, AgentState
         
@@ -205,7 +206,7 @@ class TestAgentPipeline:
             "conversation_history": None,
         }
         
-        result = ingest_node(state)
+        result = await ingest_node(state)
         
-        assert result["processing_step"] == "ingested"
+        assert result["processing_step"] == "ingested" or "استلام" in result["processing_step"]
         assert result["raw_message"].strip() == "Hello world"

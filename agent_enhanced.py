@@ -28,6 +28,7 @@ from humanize import (
 )
 from models import update_daily_analytics
 import asyncio
+from services.knowledge_base import get_knowledge_base
 from message_filters import apply_filters
 
 
@@ -82,6 +83,11 @@ class EnhancedAgentState(TypedDict):
     processing_step: str
     preferences: Optional[Dict[str, Any]]
     conversation_history: Optional[str]
+    
+    # Market-Ready Features (New)
+    knowledge_facts: list  # RAG facts
+    tool_calls: list  # External tool executions
+    needs_human_intervention: bool  # High-priority escalation flag
 
 
 async def call_llm_enhanced(
@@ -131,82 +137,81 @@ async def enhanced_classify_node(state: EnhancedAgentState) -> EnhancedAgentStat
         except Exception as e:
             print(f"Analytics update failed: {e}")
     
-    # First, run advanced rule-based analysis (fast, reliable)
+    # Run advanced rule-based analysis (fast, reliable)
+    advanced_signals = {}
     try:
-        from analysis_advanced import analyze_message_advanced, analysis_to_dict
-        
+        from analysis_advanced import analyze_message_advanced
         advanced_result = analyze_message_advanced(state["raw_message"])
-        
-        # Use advanced analysis results
-        state["intent"] = advanced_result.primary_intent
-        state["urgency"] = advanced_result.urgency_level
-        state["sentiment"] = advanced_result.sentiment
-        state["language"] = advanced_result.language
-        state["dialect"] = advanced_result.dialect
-        
-        # Store additional analysis data in extracted_entities for now
-        state["extracted_entities"] = {
-            **advanced_result.entities,
-            "_analysis": {
-                "intent_confidence": advanced_result.intent_confidence,
-                "intent_signals": advanced_result.intent_signals,
-                "urgency_score": advanced_result.urgency_score,
-                "urgency_signals": advanced_result.urgency_signals,
-                "has_deadline": advanced_result.has_deadline,
-                "deadline": advanced_result.deadline_text,
-                "sentiment_score": advanced_result.sentiment_score,
-                "frustration_level": advanced_result.frustration_level,
-                "emotional_cues": advanced_result.emotional_cues,
-                "formality": advanced_result.formality_level,
-                "questions": advanced_result.questions_asked,
-            }
+        advanced_signals = {
+            "intent": advanced_result.primary_intent,
+            "urgency": advanced_result.urgency_level,
+            "sentiment": advanced_result.sentiment,
+            "signals": advanced_result.intent_signals,
+            "urgency_score": advanced_result.urgency_score
         }
         
-        # Set key points and actions from advanced analysis
+        # Store metadata
+        state["extracted_entities"] = {**advanced_result.entities}
         state["key_points"] = advanced_result.key_points
         state["action_items"] = advanced_result.action_items
-        
+        state["sentiment_score"] = advanced_result.sentiment_score
+        state["frustration_level"] = advanced_result.frustration_level
     except Exception as e:
-        print(f"Advanced analysis failed, using LLM fallback: {e}")
-        
-        # Fallback to LLM-based classification
-        history_block = ""
-        if state.get("conversation_history"):
-            history_block = f"\nسياق المحادثة السابقة:\n{state['conversation_history']}\n"
-        
-        prompt = f"""حلل الرسالة التالية:
-1. النية (intent): استفسار، طلب خدمة، شكوى، متابعة، عرض، تسويق، آلي، أخرى
-2. الأهمية (urgency): عاجل، عادي، منخفض
-3. المشاعر (sentiment): إيجابي، محايد، سلبي
-4. اللغة: ar, en, أو أخرى
-5. اللهجة: شامي، خليجي، مصري، فصحى، أخرى
-{history_block}
-النص:
-{state['raw_message']}
+        print(f"Advanced analysis pre-pass failed: {e}")
 
-أرجع JSON فقط:
-{{"intent": "...", "urgency": "...", "sentiment": "...", "language": "...", "dialect": "..."}}"""
+    # Now use LLM for final classification, guided by rule-based signals
+    history_block = ""
+    if state.get("conversation_history"):
+        history_block = f"\nسياق المحادثة السابقة:\n{state['conversation_history']}\n"
+    
+    hint_block = ""
+    if advanced_signals:
+        hint_block = f"\nتحليل أولي (تلميحات):\n- النية المحتملة: {advanced_signals['intent']}\n- إشارات النية: {', '.join(advanced_signals['signals'])}\n- مستوى الاستعجال: {advanced_signals['urgency']} (درجة: {advanced_signals['urgency_score']})\n"
 
-        llm_response = await call_llm_enhanced(
-            prompt, "أنت محلل نصوص خبير.", temperature=0.2, json_mode=True
-        )
-        
-        if llm_response:
-            try:
-                classification = json_repair.loads(llm_response)
-                state["intent"] = classification.get("intent", "أخرى")
-                state["urgency"] = classification.get("urgency", "عادي")
-                state["sentiment"] = classification.get("sentiment", "محايد")
-                state["language"] = classification.get("language", "ar")
-                state["dialect"] = classification.get("dialect")
-            except json.JSONDecodeError:
-                state["intent"] = "أخرى"
-                state["urgency"] = "عادي"
-                state["sentiment"] = "محايد"
-        else:
-            state["intent"] = "أخرى"
-            state["urgency"] = "عادي"
-            state["sentiment"] = "محايد"
+    prompt = f"""حلل الرسالة التالية وحدد التصنيفات المناسبة.
+    {hint_block}
+    {history_block}
+    
+    الفئات المتاحة للنية (intent): استفسار، طلب خدمة، شكوى، متابعة، عرض، تسويق، آلي، أخرى
+    
+    النص:
+    {state['raw_message']}
+    
+    أرجع JSON فقط:
+    {{
+        "intent": "...", 
+        "urgency": "عاجل/عادي/منخفض", 
+        "sentiment": "إيجابي/محايد/سلبي", 
+        "language": "ar/en", 
+        "dialect": "شامي/خليجي/مصري/فصحى/أخرى",
+        "reasoning": "سبب اختيار هذا التصنيف"
+    }}"""
+
+    llm_response = await call_llm_enhanced(
+        prompt, "أنت محلل نصوص خبير لنظام خدمة عملاء ذكي.", temperature=0.1, json_mode=True
+    )
+    
+    if llm_response:
+        try:
+            from services.llm_provider import json_repair
+            classification = json_repair.loads(llm_response)
+            state["intent"] = classification.get("intent", advanced_signals.get("intent", "أخرى"))
+            state["urgency"] = classification.get("urgency", advanced_signals.get("urgency", "عادي"))
+            state["sentiment"] = classification.get("sentiment", advanced_signals.get("sentiment", "محايد"))
+            state["language"] = classification.get("language", "ar")
+            state["dialect"] = classification.get("dialect", "فصحى")
+        except Exception as e:
+            print(f"LLM Classification parsing failed: {e}")
+            # Fallback to advanced labels if LLM fails
+            if advanced_signals:
+                state["intent"] = advanced_signals["intent"]
+                state["urgency"] = advanced_signals["urgency"]
+                state["sentiment"] = advanced_signals["sentiment"]
+    elif advanced_signals:
+        # Fallback to advanced labels
+        state["intent"] = advanced_signals["intent"]
+        state["urgency"] = advanced_signals["urgency"]
+        state["sentiment"] = advanced_signals["sentiment"]
     
     # Customer relationship context
     if state.get("customer_history"):
@@ -349,6 +354,17 @@ async def enhanced_draft_node(state: EnhancedAgentState) -> EnhancedAgentState:
     elif state.get("relationship_level") == "returning":
         relationship_context = "\nThis is a returning customer - you can acknowledge that."
     
+    # Knowledge and tools context
+    knowledge_block = ""
+    if state.get("knowledge_facts"):
+        facts = "\n".join(state["knowledge_facts"])
+        knowledge_block = f"\n=== KNOWLEDGE BASE FACTS (USE THESE TO BE ACCURATE) ===\n{facts}\n"
+        
+    tool_block = ""
+    if state.get("tool_calls"):
+        tools = json.dumps(state["tool_calls"], ensure_ascii=False)
+        tool_block = f"\n=== LIVE TOOL RESULTS ===\n{tools}\n"
+    
     # Build language-specific prompt
     if language and language != "ar":
         # Non-Arabic language - respond in same language
@@ -378,6 +394,8 @@ Write a response to the customer ({sender}) based on:
 - Key points: {', '.join(key_points) or 'Not specified'}
 {relationship_context}
 {style_instructions}
+{knowledge_block}
+{tool_block}
 
 Customer's message:
 {state['raw_message']}
@@ -424,6 +442,8 @@ Write only the response in {lang_name} (3-6 lines), no explanation:"""
 - النقاط الرئيسية: {', '.join(key_points) or 'غير محددة'}
 {relationship_context}
 {style_instructions}
+{knowledge_block.replace('KNOWLEDGE BASE FACTS', 'حقائق من قاعدة المعرفة').replace('LIVE TOOL RESULTS', 'نتائج الأدوات المباشرة')}
+{tool_block.replace('LIVE TOOL RESULTS', 'نتائج الأدوات المباشرة')}
 
 رسالة العميل:
 {state['raw_message']}
@@ -489,6 +509,122 @@ Write only the response in {lang_name} (3-6 lines), no explanation:"""
     return state
 
 
+async def enhanced_verify_node(state: EnhancedAgentState) -> EnhancedAgentState:
+    """Actor-Critic Node: Verify the draft response for hallucinations or quality issues"""
+    state["processing_step"] = "تدقيق"
+    
+    draft = state.get("draft_response", "")
+    if not draft or draft.startswith("⏳"):
+        return state
+        
+    entities = state.get("extracted_entities", {})
+    preferences = state.get("preferences", {})
+    
+    # Context for the critic
+    context = f"""
+    FACTS EXTRACTED FROM MESSAGE:
+    {json.dumps(entities, ensure_ascii=False)}
+    
+    BUSINESS PREFERENCES:
+    {json.dumps(preferences, ensure_ascii=False)}
+    
+    DRAFT RESPONSE TO VERIFY:
+    {draft}
+    """
+    
+    prompt = f"""You are an AI Critic. Your job is to ensure the customer response is accurate, professional, and free of hallucinations.
+    
+    Compare the DRAFT RESPONSE with the FACTS and BUSINESS PREFERENCES.
+    
+    Check for:
+    1. HALLUCINATIONS: Does the response mention prices, dates, or facts not in the context?
+    2. UNPROFESSIONAL TONE: Is it too robotic or rude?
+    3. MISSING INFO: Did the customer ask something that was ignored?
+    
+    Output JSON ONLY:
+    {{
+        "is_valid": true/false,
+        "score": 0-100,
+        "reason": "Explain why it failed if invalid",
+        "critic_feedback": "Instructions for the AI to fix the response if invalid"
+    }}
+    
+    {context}
+    """
+    
+    llm_response = await call_llm_enhanced(
+        prompt,
+        "You are a strict quality control auditor for Arabic customer service.",
+        temperature=0.1,
+        json_mode=True
+    )
+    
+    if llm_response:
+        try:
+            verification = json_repair.loads(llm_response)
+            state["response_quality_score"] = verification.get("score", state["response_quality_score"])
+            
+            if not verification.get("is_valid", True) and verification.get("score", 100) < 70:
+                state["response_quality_issues"].append(verification.get("reason", "Hallucination detected"))
+                state["error"] = f"Verification failed: {verification.get('reason')}"
+                # Add feedback for regeneration
+                state["summary"] += f" (Verification failed: {verification.get('reason')})"
+                print(f"Critic rejected response: {verification.get('reason')}")
+            else:
+                state["error"] = None
+        except Exception as e:
+            print(f"Verification parsing failed: {e}")
+            
+    return state
+
+async def retrieve_knowledge_node(state: EnhancedAgentState) -> EnhancedAgentState:
+    """Step 2b: Retrieve relevant business facts (RAG)"""
+    state["processing_step"] = "بحث المعرفة"
+    
+    try:
+        kb = get_knowledge_base()
+        query = state["raw_message"]
+        
+        # Search Knowledge Base
+        results = await kb.search(query, k=3)
+        
+        # Filter and store high-quality facts
+        facts = []
+        for res in results:
+            if res.get("score", 1.0) < 0.5: # Lower distance = better match
+                facts.append(res["text"])
+        
+        state["knowledge_facts"] = facts
+        if facts:
+            print(f"RAG: Found {len(facts)} relevant facts.")
+        else:
+            state["knowledge_facts"] = []
+        
+    except Exception as e:
+        print(f"Knowledge retrieval error: {e}")
+        state["knowledge_facts"] = []
+        
+    return state
+
+
+async def tool_node(state: EnhancedAgentState) -> EnhancedAgentState:
+    """Step 2c: Execute actionable tools if needed"""
+    state["processing_step"] = "أدوات"
+    
+    # Placeholder for tool execution logic
+    # In a full implementation, we'd check if the LLM called a tool
+    state["tool_calls"] = []
+    
+    # Example logic: if asking about hours, simulate a tool call
+    if any(word in state["raw_message"] for word in ["ساعة", "دوام", "متى", "hours"]):
+        state["tool_calls"].append({
+            "tool": "get_business_hours",
+            "result": "9:00 AM - 6:00 PM, Sat-Thu"
+        })
+        
+    return state
+
+
 # ============ Build Enhanced Graph ============
 
 def create_enhanced_agent():
@@ -497,7 +633,10 @@ def create_enhanced_agent():
     
     workflow.add_node("classify", enhanced_classify_node)
     workflow.add_node("extract", enhanced_extract_node)
+    workflow.add_node("retrieve", retrieve_knowledge_node)
+    workflow.add_node("tool", tool_node)
     workflow.add_node("draft", enhanced_draft_node)
+    workflow.add_node("verify", enhanced_verify_node)
     
     # Routing logic
     def route_enhanced(state: EnhancedAgentState):
@@ -505,6 +644,24 @@ def create_enhanced_agent():
         if intent in ["تسويق", "آلي", "spam", "marketing", "automated"]:
             return "end"
         return "extract"
+
+    def route_after_verify(state: EnhancedAgentState):
+        """Loop back if quality is too low, or flag for human intervention"""
+        
+        # Sentiment-based Escalation Logic
+        sentiment = state.get("sentiment", "محايد")
+        urgency = state.get("urgency", "عادي")
+        quality_score = state.get("response_quality_score", 100)
+        
+        # Market-Ready Rule: Escalate if angry and urgent, or if quality is consistently low
+        if (sentiment == "سلبي" and urgency == "عاجل") or quality_score < 60:
+            state["needs_human_intervention"] = True
+            print(f"MARKET-READY: Escalating to human (Sentiment: {sentiment}, Quality: {quality_score})")
+            
+        if state.get("error") and "Verification failed" in state["error"]:
+             # In production we'd use a loop counter via state
+             return "end" 
+        return "end"
 
     workflow.set_entry_point("classify")
     workflow.add_conditional_edges(
@@ -515,8 +672,17 @@ def create_enhanced_agent():
             "end": END
         }
     )
-    workflow.add_edge("extract", "draft")
-    workflow.add_edge("draft", END)
+    workflow.add_edge("extract", "retrieve")
+    workflow.add_edge("retrieve", "tool")
+    workflow.add_edge("tool", "draft")
+    workflow.add_edge("draft", "verify")
+    workflow.add_conditional_edges(
+        "verify",
+        route_after_verify,
+        {
+            "end": END
+        }
+    )
     
     return workflow.compile()
 
@@ -629,6 +795,9 @@ async def process_message_enhanced(
         "processing_step": "",
         "preferences": preferences,
         "conversation_history": conversation_history,
+        "knowledge_facts": [],
+        "tool_calls": [],
+        "needs_human_intervention": False,
     }
     
     try:

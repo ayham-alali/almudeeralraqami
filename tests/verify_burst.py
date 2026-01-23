@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 from datetime import datetime
 
 # Adjust path to import backend modules
-sys.path.append("c:/roya/products/almudeer/backend")
+sys.path.append("C:/Projects/almudeer/backend")
 
 from workers import MessagePoller
 
@@ -14,17 +14,22 @@ class TestBurstHandling(unittest.IsolatedAsyncioTestCase):
     
     async def test_telegram_burst_grouping(self):
         # Mock dependencies
+        mock_listener = AsyncMock()
+        mock_listener.ensure_client_active = AsyncMock()
+        
         with patch('workers.get_telegram_phone_session_data', new_callable=AsyncMock) as mock_get_session, \
              patch('workers.get_telegram_phone_session', new_callable=AsyncMock) as mock_get_session_info, \
              patch('workers.TelegramPhoneService') as MockService, \
              patch('workers.get_inbox_messages', new_callable=AsyncMock) as mock_get_inbox, \
              patch('workers.save_inbox_message', new_callable=AsyncMock) as mock_save, \
              patch('workers.update_inbox_analysis', new_callable=AsyncMock) as mock_update, \
-             patch('workers.update_telegram_phone_session_sync_time', new_callable=AsyncMock):
+             patch('workers.update_telegram_phone_session_sync_time', new_callable=AsyncMock), \
+             patch('services.telegram_listener_service.get_telegram_listener', return_value=mock_listener):
             
             # Setup mocks
             mock_get_session.return_value = "fake_session"
             mock_get_session_info.return_value = {"created_at": datetime.utcnow()} # Mock session info
+            mock_listener.ensure_client_active.return_value = MagicMock() # Mock active client
             
             mock_service_instance = MockService.return_value
             # return 3 messages from same sender

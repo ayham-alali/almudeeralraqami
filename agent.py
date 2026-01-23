@@ -208,15 +208,19 @@ def rule_based_classify(message: str) -> dict:
     # Intent detection - order matters, more specific first
     intent = "أخرى"
     
-    # Help/assistance requests (common pattern)
-    if any(word in message for word in ["مساعد", "ساعد", "تساعد", "help", "أحتاج"]):
-        intent = "طلب مساعدة"
-    elif any(word in message for word in ["سعر", "كم", "تكلفة", "أسعار", "ثمن"]):
-        intent = "استفسار"
-    elif any(word in message for word in ["أريد", "أرغب", "طلب", "احتاج", "نريد", "أطلب"]):
-        intent = "طلب خدمة"
-    elif any(word in message for word in ["شكوى", "مشكلة", "لم يعمل", "تأخر", "سيء", "خطأ"]):
+    # Priority 1: Clear negative signals (Complaints)
+    # Use re.search for more flexible matching (e.g. سيء/سيئة)
+    if any(re.search(word, message) for word in [r"شكوى", r"مشكلة", r"لم يعمل", r"تأخر", r"سيئ", r"خطأ"]):
         intent = "شكوى"
+    # Priority 2: Clear business intents
+    # Special check for 'كم' to avoid matching 'عليكم'
+    elif any(word in message for word in ["سعر", "أسعار", "تكلفة", "ثمن"]) or re.search(r'\bكم\b', message) or ( "كم" in message and "عليكم" not in message):
+        intent = "استفسار"
+    elif any(word in message for word in ["أريد", "أرغب", "طلب", "احتاج", "نريد", "أطلب", "بدي"]):
+        intent = "طلب"
+    # Priority 3: Support & Help
+    elif any(word in message for word in ["مساعد", "ساعد", "تساعد", "help", "أحتاج"]):
+        intent = "طلب مساعدة"
     elif any(word in message for word in ["متابعة", "بخصوص", "استكمال", "تذكير"]):
         intent = "متابعة"
     elif any(word in message for word in ["عرض", "خصم", "تخفيض", "فرصة"]):
@@ -286,7 +290,7 @@ def extract_entities(message: str) -> dict:
     return entities
 
 
-def generate_rule_based_response(state: dict) -> str:
+def generate_rule_based_response(state: dict) -> dict:
     """Generate a human-like draft response based on intent"""
     intent = state.get("intent", "أخرى")
     sender = state.get("sender_name") or ""  # Don't use formal address for unknown
@@ -378,7 +382,9 @@ def generate_rule_based_response(state: dict) -> str:
 نحن سعداء بخدمتك."""
         }
     
-    return templates.get(intent, templates["أخرى"])
+    # Return the updated state
+    state["draft_response"] = templates.get(intent, templates["أخرى"])
+    return state
 
 
 # ============ LangGraph Nodes ============

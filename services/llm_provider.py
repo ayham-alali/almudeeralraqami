@@ -88,12 +88,12 @@ class LLMConfig:
     cache_max_size: int = 1000
     
     # Concurrency control - CRITICAL for preventing rate limits
-    # Default to 1 for safety, but Vertex AI can handle more
-    max_concurrent_requests: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_CONCURRENT", "1")))
+    # Default to 3 for better performance on Vertex AI
+    max_concurrent_requests: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_CONCURRENT", "3")))
     
     # Post-request delay in seconds - adds breathing room between requests
-    # Vertex AI has better quotas, but we keep some delay for safety
-    post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "10.0")))
+    # Vertex AI has better quotas, reduced for better UX
+    post_request_delay: float = field(default_factory=lambda: float(os.getenv("LLM_REQUEST_DELAY", "2.0")))
 
 
 # ============ Backoff with Jitter ============
@@ -163,9 +163,9 @@ class GlobalRateLimiter:
     This prevents rate limits even when the app restarts mid-request-burst.
     """
     
-    # Minimum seconds between requests (20s = max 3 requests/minute)
-    # Extremely conservative to ensure we NEVER hit the 15 RPM limit even with bursts
-    MIN_INTERVAL = float(os.getenv("LLM_MIN_REQUEST_INTERVAL", "20.0"))
+    # Minimum seconds between requests (4s = max 15 requests/minute)
+    # Optimized for Vertex AI default quotas while staying safe
+    MIN_INTERVAL = float(os.getenv("LLM_MIN_REQUEST_INTERVAL", "4.0"))
     
     # Base cooldown after 429 (5 minutes)
     BASE_COOLDOWN = 300.0
