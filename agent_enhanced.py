@@ -96,14 +96,9 @@ async def call_llm_enhanced(
     temperature: float = 0.3,
     json_mode: bool = False,
     max_tokens: int = 600,
-) -> Optional[str]:
-    """Enhanced LLM call using centralized llm_generate service.
-    
-    Uses the centralized LLM provider which supports:
-    - OpenAI and Gemini with automatic failover
-    - Rate limiting and retry logic
-    - Response caching
-    """
+    tools: Optional[list] = None,
+) -> Any:
+    """Enhanced LLM call using centralized llm_generate service."""
     try:
         from services.llm_provider import llm_generate
         
@@ -112,7 +107,8 @@ async def call_llm_enhanced(
             system=system,
             json_mode=json_mode,
             max_tokens=max_tokens,
-            temperature=temperature
+            temperature=temperature,
+            tools=tools
         )
         
         return response
@@ -193,8 +189,7 @@ async def enhanced_classify_node(state: EnhancedAgentState) -> EnhancedAgentStat
     
     if llm_response:
         try:
-            from services.llm_provider import json_repair
-            classification = json_repair.loads(llm_response)
+            classification = json_repair.loads(llm_response.content)
             state["intent"] = classification.get("intent", advanced_signals.get("intent", "أخرى"))
             state["urgency"] = classification.get("urgency", advanced_signals.get("urgency", "عادي"))
             state["sentiment"] = classification.get("sentiment", advanced_signals.get("sentiment", "محايد"))
@@ -292,7 +287,7 @@ JSON فقط:
     
     if llm_response:
         try:
-            extracted = json_repair.loads(llm_response)
+            extracted = json_repair.loads(llm_response.content)
             state["key_points"] = extracted.get("key_points", [])
             state["action_items"] = extracted.get("action_items", [])
         except:
@@ -460,9 +455,9 @@ Write only the response in {lang_name} (3-6 lines), no explanation:"""
         max_tokens=400,
     )
     
-    if llm_response and len(llm_response) > 40:
+    if llm_response and llm_response.content and len(llm_response.content) > 40:
         # Post-process: remove any remaining robotic phrases
-        draft = remove_robotic_phrases(llm_response)
+        draft = remove_robotic_phrases(llm_response.content)
         state["draft_response"] = draft
     else:
         # Fallback with persona-aware greeting/closing
@@ -561,7 +556,7 @@ async def enhanced_verify_node(state: EnhancedAgentState) -> EnhancedAgentState:
     
     if llm_response:
         try:
-            verification = json_repair.loads(llm_response)
+            verification = json_repair.loads(llm_response.content)
             state["response_quality_score"] = verification.get("score", state["response_quality_score"])
             
             if not verification.get("is_valid", True) and verification.get("score", 100) < 70:
@@ -611,16 +606,37 @@ async def tool_node(state: EnhancedAgentState) -> EnhancedAgentState:
     """Step 2c: Execute actionable tools if needed"""
     state["processing_step"] = "أدوات"
     
-    # Placeholder for tool execution logic
-    # In a full implementation, we'd check if the LLM called a tool
-    state["tool_calls"] = []
-    
-    # Example logic: if asking about hours, simulate a tool call
-    if any(word in state["raw_message"] for word in ["ساعة", "دوام", "متى", "hours"]):
-        state["tool_calls"].append({
-            "tool": "get_business_hours",
-            "result": "9:00 AM - 6:00 PM, Sat-Thu"
-        })
+    intent = state.get("intent", "")
+    if intent not in ["استفسار", "طلب", "طلب خدمة", "info", "order"]:
+        return state
+
+    try:
+        from tools.business_tools import BUSINESS_TOOLS, execute_tool
+        
+        # Call LLM specifically for tools
+        prompt = f"العميل يسأل: {state['raw_message']}\n\nحدد إذا كان هناك أية أدوات تحتاج لاستدعائها لتوفير معلومات دقيقة."
+        response = await call_llm_enhanced(
+            prompt, 
+            "أنت مساعد مفوض لاستخدام الأدوات المتاحة فقط.",
+            tools=BUSINESS_TOOLS,
+            temperature=0
+        )
+        
+        # Check for tool calls in response
+        if response and hasattr(response, 'tool_calls') and response.tool_calls:
+            results = []
+            for tc in response.tool_calls:
+                print(f"Executing Tool: {tc.name} with {tc.args}")
+                tool_res = await execute_tool(tc.name, tc.args)
+                results.append({
+                    "tool": tc.name,
+                    "result": tool_res
+                })
+            state["tool_calls"] = results
+            print(f"Tool execution results: {len(results)} success.")
+        
+    except Exception as e:
+        print(f"Tool execution error: {e}")
         
     return state
 
