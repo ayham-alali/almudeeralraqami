@@ -214,7 +214,7 @@ async def approve_chat_message(
     message = await get_inbox_message_by_id(message_id, license["license_id"])
     if not message: 
         from logging_config import get_logger
-        get_logger(__name__).warning(f"Approve attempt for non-existent message: {message_id}")
+        get_logger(__name__).warning(f"Approve attempt for non-existent message: {message_id} (License ID: {license['license_id']})")
         raise HTTPException(status_code=404, detail="الرسالة غير موجودة")
     
     if approval.action == "ignore":

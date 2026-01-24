@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from telethon import TelegramClient
     from telethon.sessions import StringSession
 import json
-import json
 import base64
 import io
 
@@ -622,6 +621,14 @@ class TelegramPhoneService:
                         if dialog.id == chat_id_int:
                             entity = dialog.entity
                             break
+                    
+                    # 3. Last Resort: Search messages if entity still not found
+                    if entity is None:
+                        logger.debug(f"Entity still not found for ID {recipient_id}. Searching messages...")
+                        async for msg in client.iter_messages(None, limit=50, search=recipient_id):
+                            if msg.peer_id and hasattr(msg.peer_id, 'user_id') and msg.peer_id.user_id == chat_id_int:
+                                entity = await msg.get_sender()
+                                break
                 except (ValueError, TypeError):
                     pass # Not a numeric ID, can't use this fallback
                 except Exception as e:

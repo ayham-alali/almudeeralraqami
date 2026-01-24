@@ -20,7 +20,7 @@ import base64
 TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID")
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
 
-from models.base import simple_decrypt
+from models.base import simple_decrypt, simple_encrypt
 
 logger = get_logger(__name__)
 
@@ -344,8 +344,24 @@ class TelegramListenerService:
                                 attachments=attachments
                             )
                         )
-                        self.background_tasks.add(task)
                         task.add_done_callback(self.background_tasks.discard)
+
+                        # 7. Persist Updated Session (CRITICAL for access_hash management)
+                        # StringSession stores new hashes as they are encountered. 
+                        # Saving it back ensures we don't get "entity not found" on replies.
+                        try:
+                            updated_session = client.session.save()
+                            encrypted_session = simple_encrypt(updated_session)
+                            async with get_db() as db:
+                                await execute_sql(
+                                    db,
+                                    "UPDATE telegram_phone_sessions SET session_data_encrypted = ?, updated_at = ? WHERE license_key_id = ?",
+                                    [encrypted_session, datetime.now(timezone.utc), license_id]
+                                )
+                                await commit_db(db)
+                            # logger.debug(f"Persisted updated Telegram session for license {license_id}")
+                        except Exception as session_e:
+                            logger.error(f"Failed to persist updated Telegram session: {session_e}")
                         
                 except Exception as e:
                     logger.error(f"Error in Telegram real-time message handler: {e}")
