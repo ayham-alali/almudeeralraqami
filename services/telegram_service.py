@@ -288,7 +288,7 @@ class TelegramService:
                 "file_name": doc.get("file_name")
             })
 
-        return {
+        result = {
             "update_id": update.get("update_id"),
             "message_id": message.get("message_id"),
             "chat_id": str(chat.get("id")),
