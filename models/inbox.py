@@ -427,7 +427,7 @@ async def approve_outbox_message(message_id: int, edited_body: str = None):
             from services.websocket_manager import broadcast_new_message
             
             # Fetch the full message to broadcast
-            full_msg = await get_outbox_message_by_id(message_id, db_license_id) # Need license_id, but generic get?
+
             # We can construct strictly what we need since we just updated it.
             # But fetching is safer.
             # We need license_id. It's in the args? No, it's not in args.
