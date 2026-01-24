@@ -297,11 +297,27 @@ class TelegramService:
             "username": from_user.get("username"),
             "first_name": from_user.get("first_name", ""),
             "last_name": from_user.get("last_name", ""),
-            "text": message.get("text", "") or message.get("caption", ""), # Use caption if text is empty
+            "text": message.get("text", "") or message.get("caption", ""), 
             "date": datetime.fromtimestamp(message.get("date", 0)),
             "is_bot": from_user.get("is_bot", False),
             "attachments": attachments
         }
+        
+        # Add fallback body if empty but has attachments (for Inbox visibility)
+        if not result["text"] and attachments:
+            first_type = attachments[0]["type"]
+            if first_type == "photo":
+                result["text"] = "[صورة]"
+            elif first_type == "voice":
+                result["text"] = "[رسالة صوتية]"
+            elif first_type == "audio":
+                result["text"] = "[ملف صوتي]"
+            elif first_type == "video":
+                result["text"] = "[فيديو]"
+            else:
+                result["text"] = "[ملف]"
+                
+        return result
 
 
 class TelegramBotManager:

@@ -22,7 +22,7 @@ import base64
 import io
 
 # MIME type mapping for Telegram media
-def get_mime_type(file_ext: str) -> str:
+def get_mime_type_from_ext(file_ext: str) -> str:
     ext = file_ext.lower().replace('.', '')
     if ext in ['jpg', 'jpeg']: return 'image/jpeg'
     if ext == 'png': return 'image/png'
@@ -504,35 +504,77 @@ class TelegramPhoneService:
                             "attachments": []
                         })
                         
-                        # Handle Media (Photo/Voice)
+                        # Handle Media (Photo/Voice/Video/Document)
                         if message.media:
                             try:
-                                # Skip huge files to prevent memory issues > 5MB
-                                if hasattr(message.media, "document") and message.media.document.size > 5 * 1024 * 1024:
+                                # Skip huge files to prevent memory issues > 10MB (Increased from 5MB)
+                                if hasattr(message.media, "document") and message.media.document.size > 10 * 1024 * 1024:
                                     logger.info(f"Skipping large media file in message {message.id} (size: {message.media.document.size} bytes)")
                                     # Mark message as having skipped media so it's not retried infinitely
                                     messages_data[-1]["media_skipped"] = True
                                     messages_data[-1]["media_skip_reason"] = "file_too_large"
+                                    
+                                    # Still set a body placeholder so user knows there is a file
+                                    if not messages_data[-1]["body"]:
+                                        mime = message.media.document.mime_type
+                                        if mime.startswith('video'): messages_data[-1]["body"] = "[فيديو كبير]"
+                                        elif mime.startswith('audio'): messages_data[-1]["body"] = "[صوت كبير]"
+                                        else: messages_data[-1]["body"] = "[ملف كبير]"
+                                        
                                     continue  # Skip downloading but keep the message
                                     
                                 # Download media to memory
                                 file_bytes = await message.download_media(file=bytes)
                                 
                                 if file_bytes:
-                                    # Detect content type
+                                    # Detect content type and generic type
                                     mime_type = "application/octet-stream"
+                                    generic_type = "file"
+                                    
                                     if hasattr(message.media, "photo"):
                                         mime_type = "image/jpeg"
+                                        generic_type = "image"
                                     elif hasattr(message.media, "document"):
                                         mime_type = message.media.document.mime_type
-                                        
+                                        # Map MIME to generic type for mobile app
+                                        if mime_type.startswith('image/'):
+                                            generic_type = "image"
+                                        elif mime_type.startswith('video/'):
+                                            generic_type = "video"
+                                        elif mime_type.startswith('audio/'):
+                                            generic_type = "audio"
+                                        else:
+                                            generic_type = "file"
+
+                                    # Set fallback body if empty (for Inbox visibility)
+                                    if not messages_data[-1]["body"]:
+                                        if generic_type == "image":
+                                            messages_data[-1]["body"] = "[صورة]"
+                                        elif generic_type == "video":
+                                            messages_data[-1]["body"] = "[فيديو]"
+                                        elif generic_type == "audio":
+                                            # Check if voice note
+                                            is_voice = False
+                                            if hasattr(message.media, "document"):
+                                                 # check attributes for voice
+                                                 for attr in message.media.document.attributes:
+                                                     if hasattr(attr, 'voice'):
+                                                         is_voice = True
+                                                         break
+                                            
+                                            messages_data[-1]["body"] = "[رسالة صوتية]" if is_voice else "[ملف صوتي]"
+                                        else:
+                                            messages_data[-1]["body"] = "[ملف]"
+
                                     # Encode to base64
                                     b64_data = base64.b64encode(file_bytes).decode('utf-8')
                                     
                                     # Add to attachments
                                     messages_data[-1]["attachments"].append({
-                                        "type": mime_type,
+                                        "type": generic_type,        # 'image', 'video', 'audio', 'file'
+                                        "mime_type": mime_type,      # 'image/jpeg', 'video/mp4', etc.
                                         "base64": b64_data,
+                                        "data": b64_data,           # Duplicate for compatibility
                                         "filename": f"file_{message.id}"
                                     })
                                     logger.debug(f"Downloaded media for message {message.id} ({len(file_bytes)} bytes)")

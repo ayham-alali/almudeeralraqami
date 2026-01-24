@@ -328,8 +328,15 @@ class GmailAPIService:
             "body": body,
             "received_at": received_at,
             "raw_from": from_header,
+            "raw_from": from_header,
             "attachments": attachments
         }
+        
+        # Add fallback body if empty but has attachments
+        if not result["body"] and attachments:
+             result["body"] = f"[مرفق: {len(attachments)} ملفات]"
+             
+        return result
     
     def _extract_email_address(self, from_header: str) -> str:
         """Extract email address from From header"""
