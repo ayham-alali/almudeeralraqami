@@ -212,7 +212,10 @@ async def approve_chat_message(
 ):
     from models.inbox import get_inbox_message_by_id, ignore_chat, approve_chat_messages
     message = await get_inbox_message_by_id(message_id, license["license_id"])
-    if not message: raise HTTPException(status_code=404, detail="الرسالة غير موجودة")
+    if not message: 
+        from logging_config import get_logger
+        get_logger(__name__).warning(f"Approve attempt for non-existent message: {message_id}")
+        raise HTTPException(status_code=404, detail="الرسالة غير موجودة")
     
     if approval.action == "ignore":
         sender = message.get("sender_contact") or message.get("sender_id")

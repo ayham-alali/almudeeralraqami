@@ -27,6 +27,8 @@ if not ADMIN_KEY:
 async def verify_admin(x_admin_key: str = Header(None, alias="X-Admin-Key")):
     """Verify admin key"""
     if not x_admin_key or x_admin_key != ADMIN_KEY:
+        from logging_config import get_logger
+        get_logger(__name__).warning(f"Admin authentication failed: Incorrect or missing key from remote.")
         raise HTTPException(status_code=403, detail="غير مصرح - Admin key required")
 
 
