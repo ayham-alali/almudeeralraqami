@@ -60,6 +60,7 @@ from .inbox import (
     create_outbox_message,
     approve_outbox_message,
     mark_outbox_sent,
+    mark_outbox_failed,
     get_pending_outbox,
     search_messages,
 )
@@ -78,10 +79,6 @@ from .customers import (
     calculate_lead_score,
     determine_segment,
     update_customer_lead_score,
-    # Analytics
-    update_daily_analytics,
-    get_ai_usage_today,
-    get_analytics_summary,
     # Analytics
     update_daily_analytics,
     get_ai_usage_today,
@@ -151,11 +148,10 @@ __all__ = [
     "get_inbox_status_counts",
     "get_conversation_messages",
     "get_conversation_messages_cursor",
+    "get_full_chat_history",
     "update_inbox_status",
     "approve_chat_messages",
     "create_outbox_message",
-    "approve_outbox_message",
-    "mark_outbox_sent",
     "approve_outbox_message",
     "mark_outbox_sent",
     "mark_outbox_failed",
@@ -189,3 +185,4 @@ __all__ = [
     "delete_old_notifications",
     "create_smart_notification",
 ]
+
