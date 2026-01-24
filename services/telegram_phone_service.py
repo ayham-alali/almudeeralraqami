@@ -5,7 +5,7 @@ MTProto client for Telegram user accounts (phone numbers)
 
 import asyncio
 import os
-from typing import Optional, Dict, Tuple, List
+from typing import Optional, Dict, Tuple, List, Any
 from datetime import datetime, timedelta, timezone
 import time
 # Telethon imports moved to methods to avoid import-time side effects
@@ -102,6 +102,52 @@ class TelegramPhoneService:
                 
         # If we exhausted retries
         raise last_error
+
+    async def _resolve_telegram_entity(self, client: "TelegramClient", recipient_id: str, logger: Any) -> Optional[Any]:
+        """
+        Robustly resolve a Telegram entity (User, Chat, or Channel).
+        Handles the case where Telethon's entity cache is empty for numeric IDs.
+        """
+        
+        # 1. Try resolving directly (works if in cache or is phone/username)
+        entity = None
+        chat_id_int = None
+        try:
+            chat_id_int = int(recipient_id)
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            if chat_id_int:
+                entity = await client.get_entity(chat_id_int)
+            else:
+                entity = await client.get_entity(recipient_id)
+            if entity:
+                return entity
+        except Exception as e:
+            logger.debug(f"Initial get_entity failed for {recipient_id}: {e}")
+
+        # 2. If it's a numeric ID and failed, try to find a resolvable alias in our DB
+        if chat_id_int:
+            try:
+                # Search Dialogs (More thorough than get_entity sometimes)
+                logger.debug(f"Entity {recipient_id} not in cache. Searching dialogs...")
+                async for dialog in client.iter_dialogs(limit=200):
+                    if dialog.id == chat_id_int:
+                        return dialog.entity
+                
+                # 3. Last Resort: Search messages if entity still not found
+                logger.debug(f"Searching messages for {recipient_id}...")
+                async for msg in client.iter_messages(None, limit=50, search=str(chat_id_int)):
+                    if msg.peer_id and (getattr(msg.peer_id, 'user_id', None) == chat_id_int or 
+                                       getattr(msg.peer_id, 'channel_id', None) == chat_id_int or
+                                       getattr(msg.peer_id, 'chat_id', None) == chat_id_int):
+                        return await msg.get_sender() or await client.get_entity(msg.peer_id)
+
+            except Exception as e:
+                logger.warning(f"Extended resolution failed for {recipient_id}: {e}")
+
+        return None
 
     async def start_login(self, phone_number: str) -> Dict[str, str]:
         """
@@ -611,16 +657,6 @@ class TelegramPhoneService:
     ) -> Dict:
         """
         Send a message via Telegram
-        
-        Args:
-            session_string: Session string
-            recipient_id: Recipient chat ID or username
-            text: Message text
-            reply_to_message_id: Optional message ID to reply to
-            client: Optional existing TelegramClient to reuse
-        
-        Returns:
-            Dict with sent message info
         """
         from logging_config import get_logger
         logger = get_logger(__name__)
@@ -631,53 +667,15 @@ class TelegramPhoneService:
                 client = await self.create_client_from_session(session_string)
                 client_created_locally = True
             
-            # CRITICAL: Fetch dialogs first to populate the entity cache
-            # This allows get_entity to resolve user IDs that the session has chatted with.
-            # Increased limit to 500 to catch older conversations.
-            logger.debug(f"Fetching dialogs to populate entity cache before sending to {recipient_id}")
-            await self._execute_with_retry(client.get_dialogs, limit=500)
+            # CRITICAL: Populate entity cache from recent dialogs first.
+            # This is the most efficient way to get access_hashes for recent contacts.
+            await self._execute_with_retry(client.get_dialogs, limit=100)
             
-            # Try to resolve entity
-            entity = None
-            try:
-                # 1. Try resolving directly (works if in cache or is phone/username)
-                chat_id_int = None
-                try:
-                    chat_id_int = int(recipient_id)
-                except:
-                    pass
-                
-                if chat_id_int:
-                    entity = await client.get_entity(chat_id_int)
-                else:
-                    entity = await client.get_entity(recipient_id)
-            except Exception as e:
-                logger.warning(f"Initial get_entity failed for {recipient_id}: {e}")
-            
-            # 2. Robust Fallback: Manually search dialogs if direct resolution failed for an ID
-            if entity is None:
-                try:
-                    chat_id_int = int(recipient_id)
-                    logger.debug(f"Entity not in cache for ID {recipient_id}. Manually searching dialogs...")
-                    async for dialog in client.iter_dialogs(limit=500):
-                        if dialog.id == chat_id_int:
-                            entity = dialog.entity
-                            break
-                    
-                    # 3. Last Resort: Search messages if entity still not found
-                    if entity is None:
-                        logger.debug(f"Entity still not found for ID {recipient_id}. Searching messages...")
-                        async for msg in client.iter_messages(None, limit=50, search=recipient_id):
-                            if msg.peer_id and hasattr(msg.peer_id, 'user_id') and msg.peer_id.user_id == chat_id_int:
-                                entity = await msg.get_sender()
-                                break
-                except (ValueError, TypeError):
-                    pass # Not a numeric ID, can't use this fallback
-                except Exception as e:
-                    logger.warning(f"Manual dialog search failed for {recipient_id}: {e}")
+            # Resolve entity using the robust helper
+            entity = await self._resolve_telegram_entity(client, recipient_id, logger)
             
             if entity is None:
-                logger.error(f"Cannot find any entity corresponding to '{recipient_id}' after dialog search and message history fallback.")
+                logger.error(f"Cannot find any entity corresponding to '{recipient_id}'")
                 raise ValueError(f"لم نتمكن من العثور على جهة الاتصال {recipient_id}. هل قام بمراسلتك مؤخراً؟")
             
             sent_message = await self._execute_with_retry(
@@ -712,15 +710,6 @@ class TelegramPhoneService:
     ) -> Dict:
         """
         Send a voice message via Telegram
-        
-        Args:
-            session_string: Session string
-            recipient_id: Recipient chat ID or username
-            audio_path: Path to audio file (MP3, OGG, etc.)
-            client: Optional existing TelegramClient to reuse
-        
-        Returns:
-            Dict with sent message info
         """
         from logging_config import get_logger
         logger = get_logger(__name__)
@@ -732,37 +721,10 @@ class TelegramPhoneService:
                 client_created_locally = True
             
             # Fetch dialogs first to populate entity cache
-            logger.debug(f"Fetching dialogs before sending voice to {recipient_id}")
-            await client.get_dialogs(limit=500)
+            await client.get_dialogs(limit=100)
             
             # Resolve entity
-            entity = None
-            try:
-                chat_id_int = None
-                try:
-                    chat_id_int = int(recipient_id)
-                except:
-                    pass
-                
-                if chat_id_int:
-                    entity = await client.get_entity(chat_id_int)
-                else:
-                    entity = await client.get_entity(recipient_id)
-            except (ValueError, TypeError):
-                pass
-            except Exception as e:
-                logger.warning(f"Failed to get entity by ID {recipient_id}: {e}")
-            
-            # Fallback search
-            if entity is None:
-                try:
-                    chat_id_int = int(recipient_id)
-                    async for dialog in client.iter_dialogs(limit=500):
-                        if dialog.id == chat_id_int:
-                            entity = dialog.entity
-                            break
-                except:
-                    pass
+            entity = await self._resolve_telegram_entity(client, recipient_id, logger)
 
             if entity is None:
                 logger.error(f"Cannot find entity '{recipient_id}'")
@@ -781,6 +743,8 @@ class TelegramPhoneService:
                 "date": sent_message.date.isoformat() if sent_message.date else None
             }
         
+        except Exception as e:
+            raise ValueError(f"خطأ في إرسال الفويس: {str(e)}")
         finally:
             if client and client_created_locally:
                 try:
@@ -809,34 +773,10 @@ class TelegramPhoneService:
                 client_created_locally = True
             
             # Fetch dialogs first
-            await client.get_dialogs(limit=500)
+            await client.get_dialogs(limit=100)
             
             # Resolve entity
-            entity = None
-            try:
-                chat_id_int = None
-                try:
-                    chat_id_int = int(recipient_id)
-                except:
-                    pass
-                
-                if chat_id_int:
-                    entity = await client.get_entity(chat_id_int)
-                else:
-                    entity = await client.get_entity(recipient_id)
-            except (ValueError, TypeError):
-                pass
-            
-            # Fallback
-            if entity is None:
-                try:
-                    chat_id_int = int(recipient_id)
-                    async for dialog in client.iter_dialogs(limit=500):
-                        if dialog.id == chat_id_int:
-                            entity = dialog.entity
-                            break
-                except:
-                    pass
+            entity = await self._resolve_telegram_entity(client, recipient_id, logger)
 
             if entity is None:
                 logger.error(f"Cannot find entity '{recipient_id}'")
@@ -864,9 +804,6 @@ class TelegramPhoneService:
                 except:
                     pass
 
-
-
-
     async def mark_as_read(
         self,
         session_string: str,
@@ -876,12 +813,6 @@ class TelegramPhoneService:
     ) -> bool:
         """
         Mark messages in a chat as read (triggers double check for sender)
-        
-        Args:
-            session_string: Session string
-            chat_id: Chat ID to mark as read
-            max_id: Mark as read up to this message ID (0 = all)
-            client: Optional existing TelegramClient to reuse
         """
         from logging_config import get_logger
         logger = get_logger(__name__)
@@ -892,29 +823,17 @@ class TelegramPhoneService:
                 client = await self.create_client_from_session(session_string)
                 client_created_locally = True
             
-            # Resolve entity (chat)
-            entity = None
-            try:
-                # Try int ID first
-                chat_id_int = int(chat_id)
-                entity = await client.get_entity(chat_id_int)
-            except (ValueError, TypeError):
-                pass
+            # Fetch dialogs first
+            await client.get_dialogs(limit=100)
+            
+            # Resolve entity
+            entity = await self._resolve_telegram_entity(client, chat_id, logger)
             
             if not entity:
-                try:
-                    entity = await client.get_entity(chat_id)
-                except:
-                    # If direct lookup fails, fetch dialogs to populate cache
-                    await client.get_dialogs(limit=20)
-                    try:
-                        entity = await client.get_entity(int(chat_id) if chat_id.isdigit() else chat_id)
-                    except Exception as e:
-                        logger.warning(f"Failed to resolve chat {chat_id} for mark_read: {e}")
-                        return False
+                logger.warning(f"Failed to resolve chat {chat_id} for mark_read")
+                return False
             
             # Send read acknowledgment
-            # This turns the ticks BLUE/GREEN on the user's side
             await client.send_read_acknowledge(entity, max_id=max_id)
             logger.info(f"Marked chat {chat_id} as read up to {max_id}")
             
@@ -938,14 +857,6 @@ class TelegramPhoneService:
     ) -> Dict[str, str]:
         """
         Get read status for specific messages
-        
-        Args:
-            session_string: Session string
-            channel_message_ids: List of Telegram message IDs to check
-            client: Optional existing TelegramClient to reuse
-        
-        Returns:
-            Dict[message_id, status] where status is 'read' or 'delivered' or 'sent'
         """
         from logging_config import get_logger
         logger = get_logger(__name__)
@@ -969,7 +880,6 @@ class TelegramPhoneService:
                 client = await self.create_client_from_session(session_string)
                 client_created_locally = True
             
-            # Use get_dialogs to find the read_outbox_max_id for relevant chats
             # Optimization: First get messages to find their chats
             messages = await client.get_messages(ids=msg_ids)
             
@@ -989,10 +899,6 @@ class TelegramPhoneService:
                 return {}
                 
             # Fetch dialogs for these chats
-            # We can't easily fetch specific dialogs by ID efficiently in one call without iterating?
-            # client.get_dialogs() fetches recent ones.
-            # If the chat is recent (likely), it will be in the top list.
-            # If not, we might miss it, but that's acceptable for now (status updates are usually for recent msgs)
             dialogs = await client.get_dialogs(limit=100)
             
             read_max_ids = {} # chat_id -> max_id
@@ -1002,15 +908,11 @@ class TelegramPhoneService:
             for msg in valid_messages:
                 chat_id = msg.chat_id
                 # Determine status
-                # If message ID <= read_outbox_max_id, it is read.
                 max_id = read_max_ids.get(chat_id, 0)
                 
-                # If we didn't find the dialog, we assume current state (sent) or unknown
-                # But if we found the dialog, check ID
                 if max_id > 0 and msg.id <= max_id:
                     statuses[str(msg.id)] = "read"
                 else:
-                    # Default
                     statuses[str(msg.id)] = "sent"
                     
             return statuses
