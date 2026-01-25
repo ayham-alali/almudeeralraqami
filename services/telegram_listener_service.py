@@ -183,6 +183,30 @@ class TelegramListenerService:
 
             # Store client immediately
             self.clients[license_id] = client
+
+            # Proactive Entity Seeding (Senior Backend Fix for Stateless Sessions)
+            async def seed_entities(lic_id, c):
+                try:
+                    from models import save_telegram_entity
+                    # Get top 50 dialogs to quickly populate common contacts
+                    async for dialog in c.iter_dialogs(limit=50):
+                        if hasattr(dialog.entity, 'access_hash') and dialog.entity.access_hash:
+                             e_type = 'user'
+                             if hasattr(dialog.entity, 'broadcast') or hasattr(dialog.entity, 'megagroup'):
+                                 e_type = 'channel'
+                             await save_telegram_entity(
+                                 license_id=lic_id,
+                                 entity_id=str(dialog.id),
+                                 access_hash=str(dialog.entity.access_hash),
+                                 entity_type=e_type,
+                                 username=getattr(dialog.entity, 'username', None),
+                                 phone=getattr(dialog.entity, 'phone', None)
+                             )
+                except Exception as seed_e:
+                    logger.error(f"Proactive seeding failed for {lic_id}: {seed_e}")
+
+            # Run seeding in background to not block listener startup
+            self.background_tasks.add(asyncio.create_task(seed_entities(license_id, client)))
             logger.info(f"Telegram client started for license {license_id}")
             
             # 1. User Update (Typing/Recording/Status)
@@ -204,6 +228,27 @@ class TelegramListenerService:
                     # For now process everything, filtering happens inside analysis
                     
                     sender = await event.get_sender()
+                    
+                    # PERSIST ENTITY HASH (Senior Backend Fix for Stateless Sessions)
+                    if sender and hasattr(sender, 'access_hash') and sender.access_hash:
+                        try:
+                            from models import save_telegram_entity
+                            # Determine entity type
+                            e_type = 'user'
+                            if hasattr(sender, 'broadcast') or hasattr(sender, 'megagroup'):
+                                e_type = 'channel'
+                            
+                            await save_telegram_entity(
+                                license_id=license_id,
+                                entity_id=str(sender.id),
+                                access_hash=str(sender.access_hash),
+                                entity_type=e_type,
+                                username=getattr(sender, 'username', None),
+                                phone=getattr(sender, 'phone', None)
+                            )
+                        except Exception as e:
+                            logger.error(f"Failed to persist Telegram entity hash: {e}")
+
                     # sender_id = sender.id
                     body = event.raw_text or ""
                     

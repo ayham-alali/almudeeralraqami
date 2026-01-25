@@ -39,6 +39,8 @@ from .telegram_config import (
     deactivate_telegram_phone_session,
     update_telegram_phone_session_sync_time,
     update_telegram_phone_session_settings,
+    save_telegram_entity,
+    get_telegram_entity,
     get_whatsapp_config,
     update_whatsapp_config_settings,
 )
@@ -136,6 +138,8 @@ __all__ = [
     "deactivate_telegram_phone_session",
     "update_telegram_phone_session_sync_time",
     "update_telegram_phone_session_settings",
+    "save_telegram_entity",
+    "get_telegram_entity",
     "get_whatsapp_config",
     "update_whatsapp_config_settings",
     # Inbox

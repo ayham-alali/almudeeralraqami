@@ -175,6 +175,22 @@ async def init_enhanced_tables():
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
         """)
+
+        # Telegram Entities (Persistent memory for peer resolution)
+        await execute_sql(db, """
+            CREATE TABLE IF NOT EXISTS telegram_entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_key_id INTEGER NOT NULL,
+                entity_id TEXT NOT NULL,
+                access_hash TEXT NOT NULL,
+                entity_type TEXT DEFAULT 'user',
+                username TEXT,
+                phone TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(license_key_id, entity_id),
+                FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
+            )
+        """)
         
         # Telegram Chat Sessions
         await execute_sql(db, """

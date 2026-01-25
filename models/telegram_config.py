@@ -355,3 +355,62 @@ async def update_whatsapp_config_settings(
         await execute_sql(db, query, params)
         await commit_db(db)
         return True
+
+# ============ Telegram Entity Persistence Functions ============
+
+async def save_telegram_entity(
+    license_id: int,
+    entity_id: str,
+    access_hash: str,
+    entity_type: str,
+    username: str = None,
+    phone: str = None
+) -> bool:
+    """Save or update persistent Telegram entity information (access_hash)."""
+    async with get_db() as db:
+        now = datetime.now() if DB_TYPE == "postgresql" else datetime.now().isoformat()
+        
+        # PostgreSQL specific 'ON CONFLICT' is cleaner, but let's stay compatible
+        existing = await fetch_one(
+            db,
+            "SELECT id FROM telegram_entities WHERE license_key_id = ? AND entity_id = ?",
+            [license_id, str(entity_id)]
+        )
+        
+        if existing:
+            await execute_sql(
+                db,
+                """
+                UPDATE telegram_entities SET
+                    access_hash = ?,
+                    entity_type = ?,
+                    username = ?,
+                    phone = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                [str(access_hash), entity_type, username, phone, now, existing["id"]]
+            )
+        else:
+            await execute_sql(
+                db,
+                """
+                INSERT INTO telegram_entities 
+                    (license_key_id, entity_id, access_hash, entity_type, username, phone, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [license_id, str(entity_id), str(access_hash), entity_type, username, phone, now]
+            )
+            
+        await commit_db(db)
+        return True
+
+
+async def get_telegram_entity(license_id: int, entity_id: str) -> Optional[dict]:
+    """Get persistent entity info (including access_hash) for a license and ID."""
+    async with get_db() as db:
+        return await fetch_one(
+            db,
+            "SELECT * FROM telegram_entities WHERE license_key_id = ? AND entity_id = ?",
+            [license_id, str(entity_id)]
+        )

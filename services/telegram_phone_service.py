@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from telethon import TelegramClient
     from telethon.sessions import StringSession
 import json
+from security import decrypt_sensitive_data
 import base64
 import io
 
@@ -106,7 +107,7 @@ class TelegramPhoneService:
     async def _resolve_telegram_entity(self, client: "TelegramClient", recipient_id: str, logger: Any) -> Optional[Any]:
         """
         Robustly resolve a Telegram entity (User, Chat, or Channel).
-        Handles the case where Telethon's entity cache is empty for numeric IDs.
+        Uses direct resolution, DB resolution (via access_hash), DB aliases, and dialog search.
         """
         logger.info(f"Resolving Telegram entity for ID: '{recipient_id}'")
         
@@ -115,95 +116,110 @@ class TelegramPhoneService:
         if clean_id.startswith("tg:"):
             clean_id = clean_id[3:]
         
-        # 1. Try resolving directly (works if in cache or is phone/username)
-        entity = None
         chat_id_int = None
         try:
             chat_id_int = int(clean_id)
         except (ValueError, TypeError):
             pass
 
+        # 1. Direct Resolution (Works if in memory cache)
         try:
             if chat_id_int:
                 entity = await client.get_entity(chat_id_int)
             else:
                 entity = await client.get_entity(clean_id)
             if entity:
-                logger.info(f"Resolved '{clean_id}' directly via cache/string.")
                 return entity
-        except Exception as e:
-            logger.debug(f"Direct resolution failed for {clean_id}: {e}")
+        except Exception:
+            pass
 
-        # 2. If it's a numeric ID and failed, try to find a resolvable alias in our DB
+        # 2. DB Persistence Resolution (Senior Backend Fix)
+        # If we have the access_hash in our DB, we can manually construct the InputPeer
         if chat_id_int:
             try:
+                from models import get_telegram_entity
+                # We need the license ID. We can get it from the client if needed, 
+                # but better to pass it or infer it. 
+                # For now, we search all known hashes for this ID across our sessions.
+                # Actually, access_hashes are account-specific. 
+                # We need to know WHICH account we are using.
+                me = await client.get_me()
                 from db_helper import get_db, fetch_one
                 async with get_db() as db:
-                    # Look for ANY message from this sender that has a phone number or username
-                    row = await fetch_one(db, """
-                        SELECT sender_contact 
-                        FROM inbox_messages 
-                        WHERE sender_id = ? 
-                          AND sender_contact IS NOT NULL 
-                          AND sender_contact != sender_id
-                          AND sender_contact != ''
-                        LIMIT 1
-                    """, [str(chat_id_int)])
-                    
-                    if row:
-                        alias = row.get("sender_contact") or row[0]
-                        logger.info(f"Found resolvable alias '{alias}' for ID {clean_id} in DB")
-                        try:
-                            entity = await client.get_entity(alias)
+                    sess_row = await fetch_one(db, "SELECT license_key_id FROM telegram_phone_sessions WHERE user_id = ?", [str(me.id)])
+                    if sess_row:
+                        lic_id = sess_row['license_key_id']
+                        ent_row = await get_telegram_entity(lic_id, str(chat_id_int))
+                        if ent_row and ent_row.get('access_hash'):
+                            from telethon.tl.types import InputPeerUser, InputPeerChannel
+                            ah = int(ent_row['access_hash'])
+                            if ent_row['entity_type'] == 'user':
+                                peer = InputPeerUser(chat_id_int, ah)
+                            else:
+                                peer = InputPeerChannel(chat_id_int, ah)
+                            
+                            entity = await client.get_entity(peer)
                             if entity:
+                                logger.info(f"Resolved entity {clean_id} using persisted access_hash from DB.")
                                 return entity
-                        except Exception as e:
-                            logger.debug(f"Failed to resolve DB alias '{alias}': {e}")
-                
-                # 3. Try to fetch all dialogs first to populate cache
-                logger.info(f"Entity {clean_id} not in cache/DB. Fetching dialogs from Telegram...")
-                await client.get_dialogs(limit=100) # Small fetch to update state
-                
-                # 4. Search Dialogs (More thorough than get_entity)
-                logger.info(f"Searching dialogs for ID {chat_id_int}...")
-                count = 0
-                async for dialog in client.iter_dialogs(limit=None):
-                    count += 1
-                    # Telethon dialog.id handles the mapping for us, but let's be safe
-                    # peer_id of users is positive ID
-                    # peer_id of chats is -ID
-                    # peer_id of channels is -100ID
-                    if dialog.id == chat_id_int or abs(dialog.id) == chat_id_int or str(dialog.id).endswith(str(chat_id_int)):
-                        logger.info(f"Found entity in dialogs after searching {count} entries.")
-                        return dialog.entity
-                
-                # 5. Last Resort: Global Peer Resolve (Force Resolve)
-                logger.info(f"Attempting Force-Resolve (GetFullUser) for {clean_id}...")
-                from telethon.tl.functions.users import GetFullUserRequest
-                from telethon.tl.types import PeerUser
-                try:
-                    full_user = await client(GetFullUserRequest(PeerUser(chat_id_int)))
-                    if full_user and full_user.users:
-                        logger.info(f"Resolved via GetFullUser force-resolve.")
-                        return full_user.users[0]
-                except Exception as e:
-                    logger.warning(f"GetFullUserRequest failed: {e}")
-                
-                # Also try PeerChannel for good measure if it looks like one
-                from telethon.tl.functions.channels import GetFullChannelRequest
-                from telethon.tl.types import PeerChannel
-                try:
-                    full_channel = await client(GetFullChannelRequest(PeerChannel(chat_id_int)))
-                    if full_channel and full_channel.chats:
-                        logger.info(f"Resolved via GetFullChannel force-resolve.")
-                        return full_channel.chats[0]
-                except Exception as e:
-                    logger.warning(f"GetFullChannelRequest failed: {e}")
-
             except Exception as e:
-                logger.warning(f"Extended resolution failed for {clean_id}: {e}")
+                logger.debug(f"DB Hash resolution failed: {e}")
 
-        logger.error(f"Failed to resolve Telegram entity for {clean_id} after all fallbacks.")
+        # 3. DB Alias (Phone/Username)
+        if chat_id_int:
+            from db_helper import get_db, fetch_one
+            async with get_db() as db:
+                row = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE sender_id = ? AND sender_contact != sender_id AND sender_contact != '' LIMIT 1", [str(chat_id_int)])
+                if row:
+                    alias = row.get("sender_contact") or row[0]
+                    try:
+                        entity = await client.get_entity(alias)
+                        if entity: return entity
+                    except: pass
+        
+        # 4. Dialogs (Deep Scan)
+        try:
+            logger.info(f"Deep scanning dialogs for {clean_id}...")
+            # We don't limit here because the contact might be archived or old
+            async for dialog in client.iter_dialogs(limit=None):
+                if (chat_id_int and (dialog.id == chat_id_int or abs(dialog.id) == chat_id_int or str(dialog.id).endswith(str(chat_id_int)))) or \
+                   (not chat_id_int and dialog.name == clean_id):
+                    # SAVE THE HASH NOW that we found it!
+                    if hasattr(dialog.entity, 'access_hash'):
+                        try:
+                            from models import save_telegram_entity
+                            me = await client.get_me()
+                            async with get_db() as db:
+                                sess_row = await fetch_one(db, "SELECT license_key_id FROM telegram_phone_sessions WHERE user_id = ?", [str(me.id)])
+                                if sess_row:
+                                    await save_telegram_entity(
+                                        license_key_id=sess_row['license_key_id'],
+                                        entity_id=str(dialog.id),
+                                        access_hash=str(dialog.entity.access_hash),
+                                        entity_type='user' if hasattr(dialog.entity, 'first_name') else 'channel',
+                                        username=getattr(dialog.entity, 'username', None)
+                                    )
+                        except: pass
+                    return dialog.entity
+        except Exception as e:
+            logger.debug(f"Dialog scan failed: {e}")
+
+        # 5. Force Resolve (Force Resolve)
+        if chat_id_int:
+            from telethon.tl.functions.users import GetFullUserRequest
+            from telethon.tl.types import PeerUser
+            try:
+                full_user = await client(GetFullUserRequest(PeerUser(chat_id_int)))
+                if full_user and full_user.users: return full_user.users[0]
+            except: pass
+            
+            from telethon.tl.functions.channels import GetFullChannelRequest
+            from telethon.tl.types import PeerChannel
+            try:
+                full_channel = await client(GetFullChannelRequest(PeerChannel(chat_id_int)))
+                if full_channel and full_channel.chats: return full_channel.chats[0]
+            except: pass
+        
         return None
 
     async def start_login(self, phone_number: str) -> Dict[str, str]:
@@ -734,7 +750,7 @@ class TelegramPhoneService:
             # CRITICAL: Populate entity cache from recent dialogs first.
             await self._execute_with_retry(client.get_dialogs, limit=200)
             
-            # Resolve entity using the robust helper
+            # 1. First resolve the entity (User, Chat, Channel)
             entity = await self._resolve_telegram_entity(client, recipient_id, logger)
             
             if entity is None:
@@ -786,9 +802,9 @@ class TelegramPhoneService:
             # Fetch dialogs first to populate entity cache
             await client.get_dialogs(limit=100)
             
-            # Resolve entity
+            # Resolve entity (will try DB hash if not in cache)
             entity = await self._resolve_telegram_entity(client, recipient_id, logger)
-
+            
             if entity is None:
                 logger.error(f"Cannot find entity '{recipient_id}'")
                 raise ValueError(f"Cannot find entity '{recipient_id}'")
@@ -840,7 +856,7 @@ class TelegramPhoneService:
             
             # Resolve entity
             entity = await self._resolve_telegram_entity(client, recipient_id, logger)
-
+            
             if entity is None:
                 logger.error(f"Cannot find entity '{recipient_id}'")
                 raise ValueError(f"Cannot find entity '{recipient_id}'")

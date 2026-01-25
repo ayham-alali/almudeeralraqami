@@ -219,6 +219,7 @@ class MessagePoller:
                     # WhatsApp uses webhooks, so no polling needed
                     
                     await self._retry_pending_messages(license_id)
+                    await self._retry_approved_outbox(license_id)
                     
                     # Poll Telegram delivery statuses (read receipts)
                     # We run this less frequently or just part of the loop
@@ -388,6 +389,54 @@ class MessagePoller:
                     
         except Exception as e:
             logger.error(f"Error retrying pending messages for license {license_id}: {type(e).__name__}: {e}", exc_info=True)
+
+    async def _retry_approved_outbox(self, license_id: int):
+        """Retry sending messages that are approved but not yet sent"""
+        try:
+            async with get_db() as db:
+                if DB_TYPE == "postgresql":
+                    query = """
+                        SELECT id, channel 
+                        FROM outbox_messages 
+                        WHERE license_key_id = $1 
+                          AND status = 'approved' 
+                          AND created_at > NOW() - INTERVAL '24 hours'
+                        ORDER BY created_at ASC
+                        LIMIT 10
+                    """
+                else:
+                    query = """
+                        SELECT id, channel 
+                        FROM outbox_messages 
+                        WHERE license_key_id = ? 
+                          AND status = 'approved' 
+                          AND created_at > datetime('now', '-24 hours')
+                        ORDER BY created_at ASC
+                        LIMIT 10
+                    """
+                
+                rows = await fetch_all(db, query, [license_id])
+                
+                if not rows:
+                    return
+                
+                logger.info(f"License {license_id}: Retrying {len(rows)} approved outbox messages")
+                
+                for row in rows:
+                    outbox_id = row.get("id")
+                    channel = row.get("channel")
+                    
+                    # Add small delay between sends
+                    await asyncio.sleep(1.0)
+                    
+                    # Reuse existing _send_message logic
+                    try:
+                        await self._send_message(outbox_id, license_id, channel)
+                    except Exception as send_e:
+                        logger.error(f"Failed to retry outbox {outbox_id}: {send_e}")
+                    
+        except Exception as e:
+            logger.error(f"Error retrying approved outbox for license {license_id}: {e}")
     
     async def _poll_email(self, license_id: int):
         """Poll email for new messages using Gmail API"""
