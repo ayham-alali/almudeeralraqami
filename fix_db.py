@@ -1,39 +1,27 @@
-import sqlite3
+
+import asyncio
 import os
+from db_helper import get_db, execute_sql, commit_db, DB_TYPE
 
-db_path = 'almudeer.db'
-if not os.path.exists(db_path):
-    print(f"Error: {db_path} not found")
-    exit(1)
+async def run_fix():
+    print(f"Connecting to database (Type: {DB_TYPE})...")
+    async with get_db() as db:
+        try:
+            print("Attempting to add 'last_message_ai_summary' column to 'inbox_conversations'...")
+            # For PostgreSQL, we check if column exists first or use a safer approach
+            if DB_TYPE == "postgresql":
+                 await execute_sql(db, "ALTER TABLE inbox_conversations ADD COLUMN IF NOT EXISTS last_message_ai_summary TEXT;")
+            else:
+                 # SQLite doesn't support IF NOT EXISTS in ALTER TABLE easily, but we already did it locally
+                 await execute_sql(db, "ALTER TABLE inbox_conversations ADD COLUMN last_message_ai_summary TEXT;")
+            
+            await commit_db(db)
+            print("SUCCESS: Column added.")
+        except Exception as e:
+            if "already exists" in str(e).lower() or "duplicate column name" in str(e).lower():
+                print("NOTE: Column already exists.")
+            else:
+                print(f"ERROR: {e}")
 
-conn = sqlite3.connect(db_path)
-try:
-    # 1. Ensure alembic_version table exists and is set to 002
-    conn.execute('CREATE TABLE IF NOT EXISTS alembic_version (version_num VARCHAR(32) PRIMARY KEY)')
-    conn.execute('DELETE FROM alembic_version')
-    conn.execute("INSERT INTO alembic_version VALUES ('002_fix_customers_id')")
-    
-    # 2. Add columns to inbox_messages if missing
-    cursor = conn.cursor()
-    cursor.execute('PRAGMA table_info(inbox_messages)')
-    cols = [c[1] for c in cursor.fetchall()]
-    
-    if 'deleted_at' not in cols:
-        conn.execute('ALTER TABLE inbox_messages ADD COLUMN deleted_at TIMESTAMP')
-        print("Added deleted_at to inbox_messages")
-
-    # 3. Add columns to outbox_messages if missing
-    cursor.execute('PRAGMA table_info(outbox_messages)')
-    cols = [c[1] for c in cursor.fetchall()]
-    
-    if 'deleted_at' not in cols:
-        conn.execute('ALTER TABLE outbox_messages ADD COLUMN deleted_at TIMESTAMP')
-        print("Added deleted_at to outbox_messages")
-
-    conn.commit()
-    print("Database preparation successful")
-except Exception as e:
-    print(f"Error: {e}")
-    conn.rollback()
-finally:
-    conn.close()
+if __name__ == "__main__":
+    asyncio.run(run_fix())
