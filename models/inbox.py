@@ -1903,14 +1903,28 @@ async def upsert_conversation_state(
         total_params.extend(check_ids)
         total_params.append(f"%{sender_contact}%")
         
-        row_count = await fetch_one(db, f"""
+        row_count_in = await fetch_one(db, f"""
             SELECT COUNT(*) as count FROM inbox_messages 
             WHERE license_key_id = ? 
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status != 'pending'
             AND deleted_at IS NULL
         """, total_params)
-        message_count = row_count["count"] if row_count else 0
+
+        # Get Total Message Count from Outbox
+        out_params_count = [license_id]
+        out_params_count.extend(check_ids)
+        out_params_count.extend(check_ids)
+        out_params_count.append(f"%{sender_contact}%")
+
+        row_count_out = await fetch_one(db, f"""
+            SELECT COUNT(*) as count FROM outbox_messages 
+            WHERE license_key_id = ? 
+            AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?)
+            AND deleted_at IS NULL
+        """, out_params_count)
+        
+        message_count = (row_count_in["count"] if row_count_in else 0) + (row_count_out["count"] if row_count_out else 0)
         
         # 2. Get Last Message (Source of Truth)
         # Could be Inbox OR Outbox. We need the absolute latest.
