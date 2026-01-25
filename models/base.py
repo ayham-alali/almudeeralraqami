@@ -145,6 +145,7 @@ async def init_enhanced_tables():
                 recipient_email TEXT,
                 subject TEXT,
                 body TEXT NOT NULL,
+                attachments TEXT,
                 status TEXT DEFAULT 'pending',
                 approved_at TIMESTAMP,
                 sent_at TIMESTAMP,

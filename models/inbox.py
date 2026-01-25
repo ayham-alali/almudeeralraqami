@@ -1933,7 +1933,7 @@ async def upsert_conversation_state(
         # Efficient querying: Get latest from each, compare.
         
         latest_inbox = await fetch_one(db, f"""
-            SELECT id, body, ai_summary, received_at as created_at, status 
+            SELECT id, body, attachments, ai_summary, received_at as created_at, status 
             FROM inbox_messages 
             WHERE license_key_id = ? 
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
@@ -1949,7 +1949,7 @@ async def upsert_conversation_state(
         out_params.append(f"%{sender_contact}%") # LIKE
 
         latest_outbox = await fetch_one(db, f"""
-            SELECT id, body, NULL as ai_summary, created_at, status 
+            SELECT id, body, attachments, NULL as ai_summary, created_at, status 
             FROM outbox_messages 
             WHERE license_key_id = ? 
             AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?) 
@@ -2011,9 +2011,39 @@ async def upsert_conversation_state(
             return
 
         status = last_message["status"]
-        body = last_message["body"]
+        body = last_message["body"] or ""
         ai_summary = last_message.get("ai_summary")
         msg_id = last_message["id"]
+        
+        # Check for empty body but present attachments (Audio/File)
+        # Check for empty body but present attachments (Audio/File)
+        if not body.strip():
+            attachments = last_message.get("attachments")
+            if attachments:
+                import json
+                try:
+                    att_list = []
+                    if isinstance(attachments, str):
+                        att_list = json.loads(attachments)
+                    elif isinstance(attachments, list):
+                        att_list = attachments
+                    
+                    if att_list and len(att_list) > 0:
+                        att = att_list[0]
+                        # Check mime_type or filename extension
+                        mime = att.get("mime_type", "").lower()
+                        filename = (att.get("filename") or att.get("file_name") or "").lower()
+                        
+                        if mime.startswith("audio/") or filename.endswith((".mp3", ".wav", ".aac", ".m4a", ".ogg", ".opus", ".amr")):
+                             body = "🎙️ تسجيل صوتي"
+                        elif mime.startswith("image/") or filename.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+                             body = "📷 صورة"
+                        elif mime.startswith("video/") or filename.endswith((".mp4", ".mov", ".avi", ".webm")):
+                             body = "🎥 فيديو"
+                        else:
+                             body = "📁 ملف"
+                except:
+                    body = "� ملف"
 
         # 3. Upsert
         now = datetime.utcnow()
