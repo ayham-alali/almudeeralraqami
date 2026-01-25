@@ -593,7 +593,7 @@ async def get_inbox_conversations(
     
     query = f"""
         SELECT 
-            COALESCE(ic.last_message_id, 0) as id,
+            ic.id,
             ic.sender_contact, ic.sender_name, ic.channel,
             last_message_body as body,
             last_message_ai_summary as ai_summary,
