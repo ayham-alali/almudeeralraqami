@@ -270,7 +270,7 @@ class WhatsAppService:
                 return file_response.content
             
             return None
-
+    
     async def upload_media(self, file_path: str, mime_type: str = "audio/mpeg") -> Optional[str]:
         """Upload media to WhatsApp and return media_id"""
         url = f"{WHATSAPP_API_BASE}/{self.phone_number_id}/media"
@@ -296,7 +296,7 @@ class WhatsAppService:
         except Exception as e:
             print(f"Error uploading media: {e}")
             return None
-
+    
     async def send_audio_message(self, to: str, media_id: str) -> Dict:
         """Send an audio message via WhatsApp"""
         payload = {
@@ -329,7 +329,7 @@ class WhatsAppService:
                 "message_id": data.get("messages", [{}])[0].get("id"),
                 "response": data
             }
-
+    
     async def send_image_message(self, to: str, media_id: str, caption: str = None) -> Dict:
         """Send an image message via WhatsApp"""
         payload = {
@@ -360,12 +360,13 @@ class WhatsAppService:
                     "error": response.text
                 }
             
+            data = response.json()
             return {
                 "success": True,
                 "message_id": data.get("messages", [{}])[0].get("id"),
                 "response": data
             }
-
+    
     async def send_video_message(self, to: str, media_id: str, caption: str = None) -> Dict:
         """Send a video message via WhatsApp"""
         payload = {
@@ -385,8 +386,12 @@ class WhatsAppService:
                 json=payload
             )
             data = response.json()
-            return {"success": response.status_code == 200, "response": data}
-
+            return {
+                "success": response.status_code == 200,
+                "message_id": data.get("messages", [{}])[0].get("id") if response.status_code == 200 else None,
+                "response": data
+            }
+    
     async def send_document_message(self, to: str, media_id: str, filename: str, caption: str = None) -> Dict:
         """Send a document message via WhatsApp"""
         payload = {
@@ -406,8 +411,12 @@ class WhatsAppService:
                 json=payload
             )
             data = response.json()
-            return {"success": response.status_code == 200, "response": data}
-
+            return {
+                "success": response.status_code == 200,
+                "message_id": data.get("messages", [{}])[0].get("id") if response.status_code == 200 else None,
+                "response": data
+            }
+    
     async def send_typing_indicator(self, to: str) -> bool:
         """
         Send typing indicator/chat state.
@@ -563,4 +572,3 @@ async def delete_whatsapp_config(license_id: int) -> bool:
         )
         await commit_db(db)
     return True
-

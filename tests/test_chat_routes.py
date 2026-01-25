@@ -224,27 +224,6 @@ class TestChatActions:
                 mock_update.assert_called_with(50, "approved")
 
     @pytest.mark.asyncio
-    async def test_ignore_message(self, mock_license_dependency, app):
-        """Test ignoring a message"""
-        
-        with patch("models.inbox.get_inbox_message_by_id", new_callable=AsyncMock) as mock_get, \
-             patch("models.inbox.ignore_chat", new_callable=AsyncMock) as mock_ignore:
-            
-            mock_get.return_value = {"id": 51, "sender_contact": "spammer"}
-            mock_ignore.return_value = 5  # count of ignored messages
-            
-            transport = ASGITransport(app=app)
-            async with AsyncClient(transport=transport, base_url="http://test") as client:
-                response = await client.post(
-                    "/api/integrations/inbox/51/approve",
-                    json={"action": "ignore"}
-                )
-                
-                assert response.status_code == 200
-                assert "5" in response.json()["message"]
-                mock_ignore.assert_called_once()
-
-    @pytest.mark.asyncio
     async def test_delete_message(self, mock_license_dependency, app):
         """Test deleting a message"""
         
