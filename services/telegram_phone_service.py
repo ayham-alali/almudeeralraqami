@@ -167,7 +167,7 @@ class TelegramPhoneService:
                 # 4. Search Dialogs (More thorough than get_entity)
                 logger.info(f"Searching dialogs for ID {chat_id_int}...")
                 count = 0
-                async for dialog in client.iter_dialogs(limit=500):
+                async for dialog in client.iter_dialogs(limit=None):
                     count += 1
                     # Telethon dialog.id handles the mapping for us, but let's be safe
                     # peer_id of users is positive ID
@@ -187,7 +187,7 @@ class TelegramPhoneService:
                         logger.info(f"Resolved via GetFullUser force-resolve.")
                         return full_user.users[0]
                 except Exception as e:
-                    logger.debug(f"GetFullUserRequest failed: {e}")
+                    logger.warning(f"GetFullUserRequest failed: {e}")
                 
                 # Also try PeerChannel for good measure if it looks like one
                 from telethon.tl.functions.channels import GetFullChannelRequest
@@ -198,7 +198,7 @@ class TelegramPhoneService:
                         logger.info(f"Resolved via GetFullChannel force-resolve.")
                         return full_channel.chats[0]
                 except Exception as e:
-                    logger.debug(f"GetFullChannelRequest failed: {e}")
+                    logger.warning(f"GetFullChannelRequest failed: {e}")
 
             except Exception as e:
                 logger.warning(f"Extended resolution failed for {clean_id}: {e}")
