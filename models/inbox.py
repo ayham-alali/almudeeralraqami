@@ -596,9 +596,11 @@ async def get_inbox_conversations(
             COALESCE(ic.last_message_id, 0) as id,
             ic.sender_contact, ic.sender_name, ic.channel,
             last_message_body as body,
+            last_message_ai_summary as ai_summary,
             last_message_at as created_at,
             ic.status,
-            unread_count
+            unread_count,
+            message_count
         FROM inbox_conversations ic
         WHERE {where_sql}
         ORDER BY ic.updated_at DESC
@@ -1931,7 +1933,7 @@ async def upsert_conversation_state(
         # Efficient querying: Get latest from each, compare.
         
         latest_inbox = await fetch_one(db, f"""
-            SELECT id, body, received_at as created_at, status 
+            SELECT id, body, ai_summary, received_at as created_at, status 
             FROM inbox_messages 
             WHERE license_key_id = ? 
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
@@ -1947,7 +1949,7 @@ async def upsert_conversation_state(
         out_params.append(f"%{sender_contact}%") # LIKE
 
         latest_outbox = await fetch_one(db, f"""
-            SELECT id, body, created_at, status 
+            SELECT id, body, NULL as ai_summary, created_at, status 
             FROM outbox_messages 
             WHERE license_key_id = ? 
             AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?) 
@@ -2010,6 +2012,7 @@ async def upsert_conversation_state(
 
         status = last_message["status"]
         body = last_message["body"]
+        ai_summary = last_message.get("ai_summary")
         msg_id = last_message["id"]
 
         # 3. Upsert
@@ -2021,12 +2024,12 @@ async def upsert_conversation_state(
         if DB_TYPE != "postgresql" and isinstance(last_message_at, datetime):
             last_ts_value = last_message_at.isoformat()
         
-        fields = ["license_key_id", "sender_contact", "last_message_id", "last_message_body", 
+        fields = ["license_key_id", "sender_contact", "last_message_id", "last_message_body", "last_message_ai_summary",
                   "last_message_at", "status", "unread_count", "message_count", "updated_at"]
-        params = [license_id, sender_contact, msg_id, body, last_ts_value, status, unread_count, message_count, ts_value]
+        params = [license_id, sender_contact, msg_id, body, ai_summary, last_ts_value, status, unread_count, message_count, ts_value]
         
         update_frame = """
-            last_message_id = ?, last_message_body = ?, last_message_at = ?, 
+            last_message_id = ?, last_message_body = ?, last_message_ai_summary = ?, last_message_at = ?, 
             status = ?, unread_count = ?, message_count = ?, updated_at = ?
         """
         
@@ -2051,6 +2054,7 @@ async def upsert_conversation_state(
                 ON CONFLICT (license_key_id, sender_contact) DO UPDATE SET
                 last_message_id = EXCLUDED.last_message_id,
                 last_message_body = EXCLUDED.last_message_body,
+                last_message_ai_summary = EXCLUDED.last_message_ai_summary,
                 last_message_at = EXCLUDED.last_message_at,
                 status = EXCLUDED.status,
                 unread_count = EXCLUDED.unread_count,
@@ -2068,6 +2072,7 @@ async def upsert_conversation_state(
                 ON CONFLICT(license_key_id, sender_contact) DO UPDATE SET
                 last_message_id = excluded.last_message_id,
                 last_message_body = excluded.last_message_body,
+                last_message_ai_summary = excluded.last_message_ai_summary,
                 last_message_at = excluded.last_message_at,
                 status = excluded.status,
                 unread_count = excluded.unread_count,
