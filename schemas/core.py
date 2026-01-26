@@ -110,4 +110,3 @@ class HealthCheck(BaseModel):
     cache: str = Field("available", description="Cache availability status")
     version: str = Field("1.0.0", description="API version")
     service: str = Field("Al-Mudeer API", description="Service name")
-
