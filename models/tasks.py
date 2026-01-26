@@ -15,7 +15,7 @@ async def init_tasks_table():
                 is_completed BOOLEAN DEFAULT FALSE,
                 due_date TIMESTAMP,
                 priority TEXT DEFAULT 'medium',
-                color INTEGER,
+                color BIGINT,
                 sub_tasks TEXT,  -- JSON string
                 created_at {TIMESTAMP_NOW},
                 updated_at TIMESTAMP,

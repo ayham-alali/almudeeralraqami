@@ -117,6 +117,22 @@ async def create_schema_if_not_exists(database_url: str):
             )
         """)
         
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS tasks (
+                id TEXT PRIMARY KEY,
+                license_key_id INTEGER NOT NULL REFERENCES license_keys(id),
+                title TEXT NOT NULL,
+                description TEXT,
+                is_completed BOOLEAN DEFAULT FALSE,
+                due_date TIMESTAMP,
+                priority TEXT DEFAULT 'medium',
+                color BIGINT,
+                sub_tasks TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP
+            )
+        """)
+        
         # Create indexes
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_license_key_hash ON license_keys(key_hash)")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_crm_license_id ON crm_entries(license_key_id)")
