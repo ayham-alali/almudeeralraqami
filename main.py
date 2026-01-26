@@ -65,10 +65,12 @@ from schemas import (
 from agent import process_message
 from models import (
     init_enhanced_tables,
+    init_enhanced_tables,
     init_customers_and_analytics,
     get_preferences,
     get_recent_conversation,
 )
+from models.tasks import init_tasks_table
 # Debug logging for imports
 import logging
 logger = logging.getLogger("startup")
@@ -83,8 +85,10 @@ try:
         export_router, 
         notifications_router, 
         purchases_router, 
-        knowledge_router
+        knowledge_router,
+        tasks
     )
+    from routes.tasks import router as tasks_router
     # Reactions router removed
     logger.info("Successfully imported modular routes")
 except ImportError as e:
@@ -147,6 +151,11 @@ async def lifespan(app: FastAPI):
             await init_customers_and_analytics()  # Customers, Analytics
         except Exception as e:
             logger.warning(f"Customers/analytics initialization warning (may already exist): {e}")
+        
+        try:
+            await init_tasks_table()
+        except Exception as e:
+            logger.warning(f"Tasks table initialization warning: {e}")
         
         # Create database indexes for query optimization
         try:
@@ -407,6 +416,7 @@ app.include_router(export_router)          # Export & Reports
 app.include_router(notifications_router)   # Smart Notifications & Integrations
 app.include_router(purchases_router)       # Customer Purchases
 app.include_router(knowledge_router)       # Knowledge Base (RAG)
+app.include_router(tasks_router)           # Task Management
 app.include_router(subscription_router)    # Subscription Key Management
 
 # JWT Authentication routes
