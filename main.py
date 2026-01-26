@@ -106,6 +106,8 @@ from services.telegram_listener_service import get_telegram_listener
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize database on startup"""
+    # Ensure logger is defined in local scope
+    logger = logging.getLogger("startup")
     try:
         logger.info("Initializing Al-Mudeer backend...")
 

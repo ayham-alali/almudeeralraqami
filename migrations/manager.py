@@ -322,4 +322,3 @@ async def ensure_inbox_conversations_pk():
             # But we can verify it if we really wanted to. Usually not needed for SQLite as it was correct from start.
             pass
 
-logger.info("User preferences columns verified")
