@@ -50,16 +50,32 @@ async def init_database():
             try:
                 await conn.execute("""
                     ALTER TABLE license_keys 
-                    ADD COLUMN IF NOT EXISTS license_key_encrypted TEXT
+                    ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50) UNIQUE,
+                    ADD COLUMN IF NOT EXISTS referred_by_id INTEGER REFERENCES license_keys(id),
+                    ADD COLUMN IF NOT EXISTS is_trial BOOLEAN DEFAULT FALSE,
+                    ADD COLUMN IF NOT EXISTS referral_count INTEGER DEFAULT 0
                 """)
             except Exception:
-                # Column might already exist, ignore
                 pass
         finally:
             await conn.close()
     else:
         async with aiosqlite.connect(DATABASE_PATH) as db:
             await _init_sqlite_tables(db)
+            # Migrations for existing SQLite tables
+            try:
+                await db.execute("ALTER TABLE license_keys ADD COLUMN referral_code TEXT UNIQUE")
+            except Exception: pass
+            try:
+                await db.execute("ALTER TABLE license_keys ADD COLUMN referred_by_id INTEGER")
+            except Exception: pass
+            try:
+                await db.execute("ALTER TABLE license_keys ADD COLUMN is_trial BOOLEAN DEFAULT FALSE")
+            except Exception: pass
+            try:
+                await db.execute("ALTER TABLE license_keys ADD COLUMN referral_count INTEGER DEFAULT 0")
+            except Exception: pass
+            await db.commit()
     
     # Initialize Service Tables
     try:
@@ -84,7 +100,12 @@ async def _init_sqlite_tables(db):
             expires_at TIMESTAMP,
             max_requests_per_day INTEGER DEFAULT 100,
             requests_today INTEGER DEFAULT 0,
-            last_request_date DATE
+            last_request_date DATE,
+            referral_code TEXT UNIQUE,
+            referred_by_id INTEGER,
+            is_trial BOOLEAN DEFAULT FALSE,
+            referral_count INTEGER DEFAULT 0,
+            FOREIGN KEY (referred_by_id) REFERENCES license_keys(id)
         )
     """)
     
@@ -231,7 +252,11 @@ async def _init_postgresql_tables(conn):
             expires_at TIMESTAMP,
             max_requests_per_day INTEGER DEFAULT 100,
             requests_today INTEGER DEFAULT 0,
-            last_request_date DATE
+            last_request_date DATE,
+            referral_code VARCHAR(50) UNIQUE,
+            referred_by_id INTEGER REFERENCES license_keys(id),
+            is_trial BOOLEAN DEFAULT FALSE,
+            referral_count INTEGER DEFAULT 0
         )
     """))
     
@@ -377,12 +402,17 @@ def hash_license_key(key: str) -> str:
 async def generate_license_key(
     company_name: str,
     days_valid: int = 365,
-    max_requests: int = 50
+    max_requests: int = 50,
+    is_trial: bool = False,
+    referred_by_id: Optional[int] = None
 ) -> str:
     """Generate a new license key and store it in the database"""
     # Generate a readable license key format: MUDEER-XXXX-XXXX-XXXX
     raw_key = f"MUDEER-{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}"
     key_hash = hash_license_key(raw_key)
+    
+    # Generate a unique referral code (short)
+    referral_code = secrets.token_hex(3).upper() # 6 characters
     
     # Encrypt the original key for storage
     from security import encrypt_sensitive_data
@@ -401,17 +431,26 @@ async def generate_license_key(
             await conn.execute(f"SELECT setval('license_keys_id_seq', {next_id}, false)")
             
             await conn.execute("""
-                INSERT INTO license_keys (id, key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day)
-                VALUES ($1, $2, $3, $4, $5, $6)
-            """, next_id, key_hash, encrypted_key, company_name, expires_at, max_requests)
+                INSERT INTO license_keys (id, key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            """, next_id, key_hash, encrypted_key, company_name, expires_at, max_requests, is_trial, referred_by_id, referral_code)
+            
+            # If referred, increment referrer's count
+            if referred_by_id:
+                await conn.execute("UPDATE license_keys SET referral_count = referral_count + 1 WHERE id = $1", referred_by_id)
         finally:
             await conn.close()
     else:
         async with aiosqlite.connect(DATABASE_PATH) as db:
-            await db.execute("""
-                INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day)
-                VALUES (?, ?, ?, ?, ?)
-            """, (key_hash, encrypted_key, company_name, expires_at.isoformat(), max_requests))
+            cursor = await db.execute("""
+                INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (key_hash, encrypted_key, company_name, expires_at.isoformat(), max_requests, is_trial, referred_by_id, referral_code))
+            
+            # If referred, increment referrer's count
+            if referred_by_id:
+                await db.execute("UPDATE license_keys SET referral_count = referral_count + 1 WHERE id = ?", (referred_by_id,))
+            
             await db.commit()
     
     return raw_key
@@ -560,6 +599,9 @@ async def validate_license_key(key: str) -> dict:
         "company_name": row_dict["company_name"],
         "created_at": str(row_dict["created_at"]) if row_dict.get("created_at") else None,
         "expires_at": expires_at_str,
+        "is_trial": bool(row_dict.get("is_trial")),
+        "referral_code": row_dict.get("referral_code"),
+        "referral_count": row_dict.get("referral_count", 0),
         "requests_remaining": row_dict.get("max_requests_per_day", 0) - (
             row_dict.get("requests_today", 0) if last_request_date == today else 0
         )

@@ -65,6 +65,8 @@ class SubscriptionCreate(BaseModel):
     contact_phone: Optional[str] = Field(None, description="رقم الهاتف")
     days_valid: int = Field(365, description="مدة الصلاحية بالأيام", ge=1, le=3650)
     max_requests_per_day: int = Field(50, description="الحد الأقصى للطلبات اليومية")
+    is_trial: bool = Field(False, description="هل هذا اشتراك تجريبي؟")
+    referred_by_code: Optional[str] = Field(None, description="كود الإحالة (اختياري)")
 
 
 class SubscriptionResponse(BaseModel):
@@ -109,11 +111,21 @@ async def create_subscription(
     logger = get_logger(__name__)
     
     try:
+        # Find referrer if code is provided
+        referred_by_id = None
+        if subscription.referred_by_code:
+            async with get_db() as db:
+                ref_row = await fetch_one(db, "SELECT id FROM license_keys WHERE referral_code = ?", [subscription.referred_by_code])
+                if ref_row:
+                    referred_by_id = ref_row["id"]
+
         # Generate the subscription key
         key = await generate_license_key(
             company_name=subscription.company_name,
             days_valid=subscription.days_valid,
-            max_requests=subscription.max_requests_per_day
+            max_requests=subscription.max_requests_per_day,
+            is_trial=subscription.is_trial,
+            referred_by_id=referred_by_id
         )
         
         # Calculate expiration date
@@ -164,7 +176,7 @@ async def list_subscriptions(
                 raise ValueError("DATABASE_URL is required for PostgreSQL")
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                query = "SELECT id, company_name, contact_email, is_active, created_at, expires_at, max_requests_per_day, requests_today, last_request_date FROM license_keys"
+                query = "SELECT id, company_name, contact_email, is_active, created_at, expires_at, max_requests_per_day, requests_today, last_request_date, is_trial, referral_code, referral_count FROM license_keys"
                 params = []
                 
                 if active_only:
@@ -196,7 +208,7 @@ async def list_subscriptions(
             async with aiosqlite.connect(DATABASE_PATH) as db:
                 db.row_factory = aiosqlite.Row
                 
-                query = "SELECT id, company_name, contact_email, is_active, created_at, expires_at, max_requests_per_day, requests_today, last_request_date FROM license_keys"
+                query = "SELECT id, company_name, contact_email, is_active, created_at, expires_at, max_requests_per_day, requests_today, last_request_date, is_trial, referral_code, referral_count FROM license_keys"
                 params = []
                 
                 if active_only:
