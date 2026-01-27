@@ -460,6 +460,7 @@ async def send_approved_message(outbox_id: int, license_id: int):
                     
                     try:
                         mime_type = att.get("mime_type") or mimetypes.guess_type(att["filename"])[0] or "application/octet-stream"
+                        is_voice_note = att.get("type") == "voice" or att.get("metadata", {}).get("is_voice_note") == True
                         
                         if channel == "whatsapp":
                             config = await get_whatsapp_config(license_id)
@@ -473,6 +474,8 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                         res = await ws.send_image_message(message["recipient_id"], mid)
                                     elif mime_type.startswith("video/"):
                                         res = await ws.send_video_message(message["recipient_id"], mid)
+                                    elif mime_type.startswith("audio/"):
+                                        res = await ws.send_audio_message(message["recipient_id"], mid)
                                     else:
                                         res = await ws.send_document_message(message["recipient_id"], mid, att["filename"])
                                     
@@ -492,7 +495,10 @@ async def send_approved_message(outbox_id: int, license_id: int):
                                     elif mime_type.startswith("video/"):
                                         res = await ts.send_video(chat_id=message["recipient_id"], video_path=tmp_path)
                                     elif mime_type.startswith("audio/"):
-                                        res = await ts.send_audio(chat_id=message["recipient_id"], audio_path=tmp_path)
+                                        if is_voice_note:
+                                            res = await ts.send_voice(chat_id=message["recipient_id"], audio_path=tmp_path)
+                                        else:
+                                            res = await ts.send_audio(chat_id=message["recipient_id"], audio_path=tmp_path)
                                     else:
                                         res = await ts.send_document(chat_id=message["recipient_id"], document_path=tmp_path)
                                     
@@ -504,11 +510,18 @@ async def send_approved_message(outbox_id: int, license_id: int):
                             session = await get_telegram_phone_session_data(license_id)
                             if session:
                                 ps = TelegramPhoneService()
-                                res = await ps.send_file(
-                                    session_string=session,
-                                    recipient_id=str(message["recipient_id"]),
-                                    file_path=tmp_path
-                                )
+                                if is_voice_note:
+                                    res = await ps.send_voice(
+                                        session_string=session,
+                                        recipient_id=str(message["recipient_id"]),
+                                        audio_path=tmp_path
+                                    )
+                                else:
+                                    res = await ps.send_file(
+                                        session_string=session,
+                                        recipient_id=str(message["recipient_id"]),
+                                        file_path=tmp_path
+                                    )
                                 sent_anything = True
                                 if res: last_platform_id = str(res.get("id"))
                     finally:
