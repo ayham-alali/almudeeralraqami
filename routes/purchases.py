@@ -31,6 +31,9 @@ class PurchaseCreate(BaseModel):
     status: str = Field(default="completed")
     notes: Optional[str] = Field(default=None, max_length=500)
     purchase_date: Optional[datetime] = None
+    payment_type: str = Field(default="spot", description="spot or deferred")
+    qard_status: Optional[str] = Field(default=None, description="active, repaid, waived")
+    is_interest_free: bool = Field(default=True)
 
 
 class PurchaseUpdate(BaseModel):
@@ -40,6 +43,9 @@ class PurchaseUpdate(BaseModel):
     status: Optional[str] = None
     notes: Optional[str] = Field(default=None, max_length=500)
     purchase_date: Optional[datetime] = None
+    payment_type: Optional[str] = None
+    qard_status: Optional[str] = None
+    is_interest_free: Optional[bool] = None
 
 
 # ============ Routes ============
@@ -92,7 +98,10 @@ async def add_customer_purchase(
         currency=data.currency,
         status=data.status,
         notes=notes,
-        purchase_date=data.purchase_date
+        purchase_date=data.purchase_date,
+        payment_type=data.payment_type,
+        qard_status=data.qard_status,
+        is_interest_free=data.is_interest_free
     )
     
     return {
@@ -155,3 +164,12 @@ async def delete_purchase_record(
         raise HTTPException(status_code=404, detail="عملية الشراء غير موجودة")
     
     return {"success": True, "message": "تم حذف عملية الشراء بنجاح"}
+
+
+@router.get("/purchases/stats/zakat")
+async def get_zakat_summary(license: dict = Depends(get_license_from_header)):
+    """Get Zakat estimation for the business."""
+    from services.zakat_service import calculate_zakat_summary
+    
+    summary = await calculate_zakat_summary(license["license_id"])
+    return summary

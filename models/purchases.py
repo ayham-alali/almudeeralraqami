@@ -10,6 +10,40 @@ from decimal import Decimal
 from db_helper import get_db, execute_sql, fetch_all, fetch_one, commit_db, DB_TYPE
 
 
+async def init_ifc_ledger():
+    """Ensure the purchases table has Sharia-compliant financial tracking fields."""
+    from db_helper import get_db, execute_sql, commit_db, DB_TYPE
+    from logging_config import get_logger
+    
+    logger = get_logger(__name__)
+    logger.info("Initializing IFC ledger fields...")
+    
+    async with get_db() as db:
+        # 1. Add payment_type (spot/deferred)
+        try:
+            await execute_sql(db, "ALTER TABLE purchases ADD COLUMN payment_type TEXT DEFAULT 'spot'")
+        except Exception:
+            pass
+            
+        # 2. Add qard_status (active/repaid/waived)
+        try:
+            await execute_sql(db, "ALTER TABLE purchases ADD COLUMN qard_status TEXT")
+        except Exception:
+            pass
+
+        # 3. Add is_interest_free (always True for IFC, but good for transparency)
+        try:
+            if DB_TYPE == "postgresql":
+                await execute_sql(db, "ALTER TABLE purchases ADD COLUMN is_interest_free BOOLEAN DEFAULT TRUE")
+            else:
+                await execute_sql(db, "ALTER TABLE purchases ADD COLUMN is_interest_free INTEGER DEFAULT 1")
+        except Exception:
+            pass
+            
+        await commit_db(db)
+        logger.info("✅ IFC ledger fields initialized successfully")
+
+
 async def create_purchase(
     license_id: int,
     customer_id: int,
@@ -18,9 +52,12 @@ async def create_purchase(
     currency: str = "SYP",
     status: str = "completed",
     notes: str = None,
-    purchase_date: datetime = None
+    purchase_date: datetime = None,
+    payment_type: str = "spot",
+    qard_status: str = None,
+    is_interest_free: bool = True
 ) -> dict:
-    """Create a new purchase record for a customer."""
+    """Create a new purchase record for a customer with IFC support."""
     if purchase_date is None:
         purchase_date = datetime.utcnow()
     
@@ -28,10 +65,17 @@ async def create_purchase(
         await execute_sql(
             db,
             """
-            INSERT INTO purchases (license_key_id, customer_id, product_name, amount, currency, status, notes, purchase_date)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO purchases (
+                license_key_id, customer_id, product_name, amount, currency, 
+                status, notes, purchase_date, payment_type, qard_status, is_interest_free
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [license_id, customer_id, product_name, amount, currency, status, notes, purchase_date]
+            [
+                license_id, customer_id, product_name, amount, currency, 
+                status, notes, purchase_date, payment_type, qard_status, 
+                1 if is_interest_free else 0
+            ]
         )
         await commit_db(db)
         
@@ -92,7 +136,10 @@ async def update_purchase(
     **kwargs
 ) -> bool:
     """Update a purchase record."""
-    allowed_fields = ['product_name', 'amount', 'currency', 'status', 'notes', 'purchase_date']
+    allowed_fields = [
+        'product_name', 'amount', 'currency', 'status', 'notes', 
+        'purchase_date', 'payment_type', 'qard_status', 'is_interest_free'
+    ]
     updates = {k: v for k, v in kwargs.items() if k in allowed_fields and v is not None}
     
     if not updates:

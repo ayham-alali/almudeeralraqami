@@ -141,8 +141,10 @@ async def lifespan(app: FastAPI):
         await init_database()
         try:
             await init_enhanced_tables()  # Email & Telegram tables
+            from models.purchases import init_ifc_ledger
+            await init_ifc_ledger()  # Sharia-compliant ledger fields
         except Exception as e:
-            logger.warning(f"Enhanced tables initialization warning (may already exist): {e}")
+            logger.warning(f"Enhanced tables or IFC ledger initialization warning: {e}")
         try:
             from services.notification_service import init_notification_tables
             await init_notification_tables()  # Notification tables
