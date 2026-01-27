@@ -276,6 +276,29 @@ class TelegramService:
                 "mime_type": audio.get("mime_type", "audio/mpeg"),
                 "file_size": audio.get("file_size", 0)
             })
+
+        # Video
+        if message.get("video"):
+            video = message["video"]
+            attachments.append({
+                "type": "video",
+                "file_id": video["file_id"],
+                "mime_type": video.get("mime_type", "video/mp4"),
+                "file_size": video.get("file_size", 0),
+                "file_name": video.get("file_name", f"video_{video['file_id']}.mp4")
+            })
+
+        # Video Note (Rounded video)
+        if message.get("video_note"):
+            vnote = message["video_note"]
+            attachments.append({
+                "type": "video",
+                "file_id": vnote["file_id"],
+                "mime_type": "video/mp4",
+                "file_size": vnote.get("file_size", 0),
+                "file_name": f"videonote_{vnote['file_id']}.mp4",
+                "metadata": {"is_video_note": True}
+            })
             
         # Document
         if message.get("document"):

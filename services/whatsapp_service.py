@@ -198,6 +198,11 @@ class WhatsAppService:
                             parsed["body"] = "[صورة]"
                             parsed["media_id"] = msg.get("image", {}).get("id")
                             parsed["caption"] = msg.get("image", {}).get("caption", "")
+
+                        elif msg_type == "video":
+                            parsed["body"] = "[فيديو]"
+                            parsed["media_id"] = msg.get("video", {}).get("id")
+                            parsed["caption"] = msg.get("video", {}).get("caption", "")
                         
                         elif msg_type == "audio":
                             parsed["body"] = "[رسالة صوتية]"

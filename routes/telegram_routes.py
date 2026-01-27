@@ -138,16 +138,35 @@ async def telegram_webhook(
     if attachments:
         try:
             bot = TelegramBotManager.get_bot(license_id, config["bot_token"])
+            from services.file_storage_service import get_file_storage
+            import mimetypes
+            
             for att in attachments:
                 if att.get("file_id"):
+                    # Download file regardless of size (subject to Telegram API limits ~20MB)
                     file_info = await bot.get_file(att["file_id"])
                     if file_info and file_info.get("file_path"):
                         content = await bot.download_file(file_info["file_path"])
-                        if content and len(content) < 5*1024*1024:
-                            b64 = base64.b64encode(content).decode('utf-8')
-                            att["base64"] = b64
-                            att["data"] = b64
-        except: pass
+                        if content:
+                            # Save to persistent storage
+                            filename = att.get("file_name") or f"{att.get('type', 'file')}_{att['file_id']}"
+                            # Fix extension logic if needed or let storage handle it
+                            
+                            rel_path, abs_url = get_file_storage().save_file(
+                                content=content,
+                                filename=filename,
+                                mime_type=att.get("mime_type")
+                            )
+                            
+                            att["url"] = abs_url
+                            att["path"] = rel_path
+                            att["size"] = len(content)
+                            
+                            # Keep base64 for very small images (< 200KB) for instant preview
+                            if len(content) < 200 * 1024 and att.get("type") == "photo":
+                                att["base64"] = base64.b64encode(content).decode('utf-8')
+        except Exception as e:
+            print(f"Error processing Telegram attachments: {e}")
 
     msg_id = await save_inbox_message(
         license_id=license_id,

@@ -290,7 +290,7 @@ class GmailAPIService:
                         continue
                         
                     # Parse and check date
-                    parsed_email = self._parse_message(msg)
+                    parsed_email = await self._parse_message(msg)
                     
                     if parsed_email["received_at"] > cutoff_date:
                         emails.append(parsed_email)
@@ -330,14 +330,14 @@ class GmailAPIService:
         for msg_id in message_ids:
             try:
                 message = await self.get_message(msg_id, format="full")
-                emails.append(self._parse_message(message))
+                emails.append(await self._parse_message(message))
             except Exception as e:
                 print(f"Error parsing message {msg_id}: {e}")
                 continue
         
         return emails
     
-    def _parse_message(self, message: Dict) -> Dict:
+    async def _parse_message(self, message: Dict) -> Dict:
         """Parse Gmail API message format into our standard format"""
         payload = message.get("payload", {})
         headers = {h["name"].lower(): h["value"] for h in payload.get("headers", [])}
@@ -359,7 +359,7 @@ class GmailAPIService:
             received_at = datetime.now(timezone.utc)
 
         # Extract attachments metadata
-        attachments = self._extract_attachments_meta(payload)
+        attachments = await self._extract_attachments_meta(payload, message.get("id"))
         
         return {
             "channel_message_id": message.get("id"),
@@ -454,27 +454,62 @@ class GmailAPIService:
         
         return ""
 
-    def _extract_attachments_meta(self, payload: Dict) -> List[Dict]:
-        """Extract attachment metadata from payload"""
+    async def _extract_attachments_meta(self, payload: Dict, message_id: str) -> List[Dict]:
+        """Extract attachment metadata and save content"""
+        from services.file_storage_service import get_file_storage
+        
         attachments = []
         parts = payload.get("parts", [])
         
         # Helper to recurse
-        def scan_parts(parts_list):
+        async def scan_parts(parts_list):
             for part in parts_list:
                 if part.get("filename") and part.get("body", {}).get("attachmentId"):
-                    attachments.append({
-                        "file_id": part["body"]["attachmentId"],
-                        "file_name": part["filename"],
-                        "mime_type": part.get("mimeType"),
-                        "file_size": part["body"].get("size", 0),
-                        "type": "document" # Generic type
-                    })
+                    att_id = part["body"]["attachmentId"]
+                    filename = part["filename"]
+                    mime_type = part.get("mimeType")
+                    size = part["body"].get("size", 0)
+                    
+                    # Infer type
+                    type_ = "document"
+                    if mime_type:
+                        if mime_type.startswith("image/"): type_ = "image"
+                        elif mime_type.startswith("video/"): type_ = "video"
+                        elif mime_type.startswith("audio/"): type_ = "audio"
+                    
+                    att_data = {
+                        "file_id": att_id,
+                        "file_name": filename,
+                        "mime_type": mime_type,
+                        "file_size": size,
+                        "type": type_
+                    }
+
+                    # Download and save if we have a message ID
+                    if message_id:
+                        try:
+                            content = await self.get_attachment_data(message_id, att_id)
+                            if content:
+                                rel_path, abs_url = get_file_storage().save_file(
+                                    content=content,
+                                    filename=filename,
+                                    mime_type=mime_type
+                                )
+                                att_data["url"] = abs_url
+                                att_data["path"] = rel_path
+                                
+                                # Optional: Base64 for small images
+                                if size < 200 * 1024 and type_ == "image":
+                                    att_data["base64"] = base64.b64encode(content).decode('utf-8')
+                        except Exception as e:
+                            print(f"Error saving attachment {filename}: {e}")
+
+                    attachments.append(att_data)
                 
                 # Recurse if multipart
                 if part.get("parts"):
-                    scan_parts(part["parts"])
+                    await scan_parts(part["parts"])
         
-        scan_parts(parts)
+        await scan_parts(parts)
         return attachments
 
