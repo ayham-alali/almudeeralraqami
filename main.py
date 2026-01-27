@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from fastapi.staticfiles import StaticFiles
 
 # Performance middleware
 from middleware import PerformanceMiddleware, SecurityHeadersMiddleware
@@ -446,6 +447,13 @@ app.include_router(version_analytics_router)
 # Sync routes for offline operation support
 from routes.sync import router as sync_router
 app.include_router(sync_router)
+
+# Mount static files directory
+# This allows the mobile app to access uploaded media files at /static/uploads/...
+static_dir = os.path.join(os.getcwd(), "static")
+if not os.path.exists(static_dir):
+    os.makedirs(static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/debug/routes")
 async def list_all_routes(x_admin_key: str = Header(None, alias="X-Admin-Key")):

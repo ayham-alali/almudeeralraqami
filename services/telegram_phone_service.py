@@ -21,6 +21,7 @@ import json
 from security import decrypt_sensitive_data
 import base64
 import io
+from services.file_storage_service import get_file_storage
 
 # MIME type mapping for Telegram media
 def get_mime_type_from_ext(file_ext: str) -> str:
@@ -626,8 +627,8 @@ class TelegramPhoneService:
                         # Handle Media (Photo/Voice/Video/Document)
                         if message.media:
                             try:
-                                # Skip huge files to prevent memory issues > 10MB (Increased from 5MB)
-                                if hasattr(message.media, "document") and message.media.document.size > 10 * 1024 * 1024:
+                                # Skip huge files to prevent memory issues > 20MB (Increased from 10MB)
+                                if hasattr(message.media, "document") and message.media.document.size > 20 * 1024 * 1024:
                                     logger.info(f"Skipping large media file in message {message.id} (size: {message.media.document.size} bytes)")
                                     # Mark message as having skipped media so it's not retried infinitely
                                     messages_data[-1]["media_skipped"] = True
@@ -685,18 +686,30 @@ class TelegramPhoneService:
                                         else:
                                             messages_data[-1]["body"] = "[ملف]"
 
-                                    # Encode to base64
-                                    b64_data = base64.b64encode(file_bytes).decode('utf-8')
+                                    # Save to file system (Premium Storage)
+                                    filename = f"tg_phone_{message.id}"
+                                    rel_path, abs_url = get_file_storage().save_file(
+                                        content=file_bytes,
+                                        filename=filename,
+                                        mime_type=mime_type
+                                    )
+
+                                    # Hybrid storage: small files get base64 for instant loading
+                                    b64_data = None
+                                    if len(file_bytes) < 1 * 1024 * 1024:
+                                        b64_data = base64.b64encode(file_bytes).decode('utf-8')
                                     
                                     # Add to attachments
                                     messages_data[-1]["attachments"].append({
                                         "type": generic_type,        # 'image', 'video', 'audio', 'file'
                                         "mime_type": mime_type,      # 'image/jpeg', 'video/mp4', etc.
+                                        "url": abs_url,
+                                        "path": rel_path,
                                         "base64": b64_data,
-                                        "data": b64_data,           # Duplicate for compatibility
-                                        "filename": f"file_{message.id}"
+                                        "filename": filename,
+                                        "size": len(file_bytes)
                                     })
-                                    logger.debug(f"Downloaded media for message {message.id} ({len(file_bytes)} bytes)")
+                                    logger.debug(f"Saved media for message {message.id} ({len(file_bytes)} bytes) to {rel_path}")
                                     
                             except Exception as media_e:
                                 # logger.error(f"Failed to download media for message {message.id}: {media_e}")

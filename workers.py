@@ -10,6 +10,7 @@ import hashlib
 import base64
 import tempfile
 import mimetypes
+from services.file_storage_service import get_file_storage
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Set, Any
 
@@ -642,7 +643,26 @@ class MessagePoller:
                                 att["file_id"]
                             )
                             if data:
-                                att["base64"] = base64.b64encode(data).decode("utf-8")
+                                # Save to file system (Premium Storage)
+                                filename = att.get("file_name") or f"em_{att['file_id']}"
+                                mime_type = att.get("mime_type", "application/octet-stream")
+                                
+                                rel_path, abs_url = get_file_storage().save_file(
+                                    content=data,
+                                    filename=filename,
+                                    mime_type=mime_type
+                                )
+                                
+                                # Add metadata
+                                att["url"] = abs_url
+                                att["path"] = rel_path
+                                att["size"] = len(data)
+                                
+                                # Hybrid storage: small files get base64 for instant loading
+                                if len(data) < 1 * 1024 * 1024:
+                                    att["base64"] = base64.b64encode(data).decode("utf-8")
+                                else:
+                                    att["base64"] = None # Clear data to keep DB lean
                     except Exception as e:
                         logger.warning(f"Failed to download email attachment {att.get('file_name')}: {e}")
 

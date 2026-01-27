@@ -17,6 +17,7 @@ from services.whatsapp_service import (
 from models import save_inbox_message, create_smart_notification
 from security import sanitize_phone, sanitize_string, sanitize_message
 from dependencies import get_license_from_header
+from services.file_storage_service import get_file_storage
 
 router = APIRouter(prefix="/api/integrations/whatsapp", tags=["WhatsApp"])
 
@@ -338,18 +339,50 @@ async def receive_webhook(request: Request):
                         
                         continue  # Status processed, skip to next message
                     
-                    # Media Handling
+                    # Media Handling (Premium File Storage)
                     attachments = []
                     if msg.get("media_id"):
                         try:
                             content = await service.download_media(msg["media_id"])
-                            if content and len(content) < 5 * 1024 * 1024:
-                                attachments.append({
-                                    "type": msg.get("type", "image"),
-                                    "base64": base64.b64encode(content).decode('utf-8'),
-                                    "data": base64.b64encode(content).decode('utf-8'),
-                                    "file_id": msg["media_id"]
-                                })
+                            if content:
+                                size = len(content)
+                                if size < 20 * 1024 * 1024: # Increased to 20MB for premium
+                                    # Identify type & extension
+                                    msg_type = msg.get("type", "file")
+                                    # Guess mime type if possible, or use WhatsApp suggested type
+                                    # WhatsApp 'audio' can be voice or audio.
+                                    # We'll use the type from the webhook msg
+                                    mime_map = {
+                                        "image": "image/jpeg",
+                                        "audio": "audio/ogg", # WhatsApp usually sends ogg
+                                        "video": "video/mp4",
+                                        "document": "application/pdf" # Default doc
+                                    }
+                                    mime_type = mime_map.get(msg_type, "application/octet-stream")
+                                    
+                                    # Save to file system
+                                    filename = f"wa_{msg['media_id']}"
+                                    rel_path, abs_url = get_file_storage().save_file(
+                                        content=content,
+                                        filename=filename,
+                                        mime_type=mime_type
+                                    )
+                                    
+                                    # Hybrid storage: small files get base64 for instant loading
+                                    b64_data = None
+                                    if size < 1 * 1024 * 1024:
+                                        b64_data = base64.b64encode(content).decode('utf-8')
+
+                                    attachments.append({
+                                        "type": "voice" if msg.get("is_voice") else msg_type,
+                                        "mime_type": mime_type,
+                                        "url": abs_url,
+                                        "path": rel_path,
+                                        "base64": b64_data,
+                                        "filename": filename,
+                                        "size": size,
+                                        "platform_media_id": msg["media_id"]
+                                    })
                         except Exception as e:
                             print(f"Error downloading WhatsApp media: {e}")
 

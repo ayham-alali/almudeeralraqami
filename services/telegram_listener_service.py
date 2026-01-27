@@ -21,6 +21,7 @@ TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID")
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH")
 
 from models.base import simple_decrypt, simple_encrypt
+from services.file_storage_service import get_file_storage
 
 logger = get_logger(__name__)
 
@@ -325,12 +326,18 @@ class TelegramListenerService:
                     attachments = []
                     if event.message.media:
                         try:
-                            # Skip huge files > 5MB
+                            # Skip huge files > 20MB
                             size = 0
+                            is_voice = False
                             if hasattr(event.message.media, "document") and event.message.media.document:
                                 size = event.message.media.document.size
+                                # Check if it's a voice note
+                                for attribute in event.message.media.document.attributes:
+                                    if hasattr(attribute, 'voice') and attribute.voice:
+                                        is_voice = True
+                                        break
                             
-                            if size < 5 * 1024 * 1024:
+                            if size < 20 * 1024 * 1024:
                                 file_bytes = await event.message.download_media(file=bytes)
                                 if file_bytes:
                                     mime_type = "application/octet-stream"
@@ -338,13 +345,29 @@ class TelegramListenerService:
                                         mime_type = "image/jpeg"
                                     elif hasattr(event.message.media, "document"):
                                         mime_type = event.message.media.document.mime_type
+                                    
+                                    # Save to file system (Premium Storage)
+                                    filename = f"tg_{channel_message_id}"
+                                    rel_path, abs_url = get_file_storage().save_file(
+                                        content=file_bytes,
+                                        filename=filename,
+                                        mime_type=mime_type
+                                    )
                                         
-                                    b64_data = base64.b64encode(file_bytes).decode('utf-8')
+                                    # We keep base64 only for very small files (< 1MB) as optimization,
+                                    # otherwise only store the URL to keep DB lean.
+                                    b64_data = None
+                                    if size < 1 * 1024 * 1024:
+                                        b64_data = base64.b64encode(file_bytes).decode('utf-8')
+                                        
                                     attachments.append({
-                                        "type": mime_type,
+                                        "type": "voice" if is_voice else mime_type,
+                                        "mime_type": mime_type,
+                                        "url": abs_url,
+                                        "path": rel_path,
                                         "base64": b64_data,
-                                        "data": b64_data,
-                                        "filename": f"tg_file_{channel_message_id}"
+                                        "filename": filename,
+                                        "size": size
                                     })
                         except Exception as media_e:
                             logger.debug(f"Failed to download real-time media: {media_e}")
