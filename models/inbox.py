@@ -613,6 +613,41 @@ async def get_inbox_conversations(
         return [_parse_message_row(dict(row)) for row in rows]
 
 
+async def get_conversations_delta(
+    license_id: int,
+    since: datetime,
+    limit: int = 50
+) -> List[dict]:
+    """
+    Get conversations updated since a specific timestamp (Delta Sync).
+    """
+    # For SQLite compatibility with ISO strings
+    ts_value = since if DB_TYPE == "postgresql" else since.isoformat()
+
+    query = """
+        SELECT 
+            ic.id,
+            ic.sender_contact, ic.sender_name, ic.channel,
+            last_message_body as body,
+            last_message_ai_summary as ai_summary,
+            last_message_at as created_at,
+            ic.status,
+            unread_count,
+            message_count
+        FROM inbox_conversations ic
+        WHERE license_key_id = ? 
+          AND ic.status != 'pending'
+          AND last_message_at > ?
+        ORDER BY ic.last_message_at DESC
+        LIMIT ?
+    """
+    params = [license_id, ts_value, limit]
+    
+    async with get_db() as db:
+        rows = await fetch_all(db, query, params)
+        return [_parse_message_row(dict(row)) for row in rows]
+
+
 async def get_inbox_conversations_count(
     license_id: int,
     status: str = None,

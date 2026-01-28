@@ -163,6 +163,26 @@ async def get_customers(license_id: int, limit: int = 100) -> List[dict]:
         return rows
 
 
+async def get_customers_delta(license_id: int, since: datetime, limit: int = 100) -> List[dict]:
+    """Get customers updated/active since a specific timestamp."""
+    # For SQLite compatibility with ISO strings
+    ts_value = since if DB_TYPE == "postgresql" else since.isoformat()
+    
+    async with get_db() as db:
+        rows = await fetch_all(
+            db,
+            """
+            SELECT * FROM customers 
+            WHERE license_key_id = ? 
+            AND (last_contact_at > ? OR created_at > ?)
+            ORDER BY last_contact_at DESC
+            LIMIT ?
+            """,
+            [license_id, ts_value, ts_value, limit],
+        )
+        return rows
+
+
 async def get_customer(license_id: int, customer_id: int) -> Optional[dict]:
     """Get a specific customer"""
     async with get_db() as db:

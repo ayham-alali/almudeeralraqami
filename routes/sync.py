@@ -311,3 +311,45 @@ async def get_sync_status(
     return {
         "server_timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+class DeltaSyncResponse(BaseModel):
+    """Response for delta sync."""
+    customers: List[dict]
+    conversations: List[dict]
+    server_timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@router.get("/delta", response_model=DeltaSyncResponse)
+async def get_delta_sync(
+    since: Optional[datetime] = None,
+    limit: int = 50,
+    license_data: dict = Depends(get_license_from_header),
+):
+    """
+    Get incremental updates for customers and conversations.
+    
+    - `since`: ISO timestamp of last sync. If missing, returns recent active context.
+    - `limit`: Maximum items to return per category.
+    """
+    license_id = license_data.get("license_id")
+    
+    # If no timestamp provided, default to recent history (e.g., 30 days ago)
+    # or just rely on limit to get "Active Context"
+    if not since:
+        since = datetime.now(timezone.utc) - timedelta(days=30)
+    elif since.tzinfo is None:
+        # Assume UTC if naive
+        since = since.replace(tzinfo=timezone.utc)
+        
+    from models.customers import get_customers_delta
+    from models.inbox import get_conversations_delta
+    
+    customers = await get_customers_delta(license_id, since, limit)
+    conversations = await get_conversations_delta(license_id, since, limit)
+    
+    return DeltaSyncResponse(
+        customers=customers,
+        conversations=conversations,
+        server_timestamp=datetime.now(timezone.utc)
+    )
