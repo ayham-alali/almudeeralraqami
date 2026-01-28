@@ -31,7 +31,7 @@ Output JSON format:
 Rules:
 1. Priority:
    - "High" if urgency is detected (e.g., "urgent", "today", "asap", words like "عاجل", "اليوم").
-   - "High" for religious obligations (e.g., "Prayer", "Zakat").
+   - "High" for religious obligations (e.g., "Prayer").
    - "Medium" default.
    
 2. Color (ARGB Int):

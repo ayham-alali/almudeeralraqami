@@ -166,10 +166,4 @@ async def delete_purchase_record(
     return {"success": True, "message": "تم حذف عملية الشراء بنجاح"}
 
 
-@router.get("/purchases/stats/zakat")
-async def get_zakat_summary(license: dict = Depends(get_license_from_header)):
-    """Get Zakat estimation for the business."""
-    from services.zakat_service import calculate_zakat_summary
-    
-    summary = await calculate_zakat_summary(license["license_id"])
-    return summary
+
