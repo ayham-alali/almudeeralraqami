@@ -181,11 +181,22 @@ async def send_chat_message(
     
     if not body and not attachments: raise HTTPException(status_code=400, detail="الرسالة فارغة")
     
-    history = await get_full_chat_history(license["license_id"], sender_contact, limit=1)
-    if not history: raise HTTPException(status_code=404, detail="المحادثة غير موجودة")
+    channel = data.get("channel")
+    if not channel:
+        if sender_contact == "__saved_messages__":
+            channel = "saved"
+        else:
+            history = await get_full_chat_history(license["license_id"], sender_contact, limit=1)
+            if not history: raise HTTPException(status_code=404, detail="المحادثة غير موجودة")
+            channel = history[0].get("channel", "whatsapp")
     
-    channel = history[0].get("channel", "whatsapp")
-    recipient_id = history[0].get("sender_id")
+    recipient_id = None
+    if sender_contact == "__saved_messages__":
+        recipient_id = "__saved_messages__"
+    else:
+        history = history if 'history' in locals() else await get_full_chat_history(license["license_id"], sender_contact, limit=1)
+        if history:
+            recipient_id = history[0].get("sender_id")
     
     outbox_id = await create_outbox_message(
         inbox_message_id=None,
@@ -370,7 +381,12 @@ async def send_approved_message(outbox_id: int, license_id: int):
         sent_anything = False
         last_platform_id = None
         channel = message["channel"]
-
+        
+        # 0. SKIP EXTERNAL DELIVERY FOR SAVED MESSAGES (Self-chat)
+        if channel == "saved":
+            sent_anything = True
+            last_platform_id = f"saved_{message['id']}"
+        
         # 1. SEND TEXT
         if body and not audio_path:
             try:
