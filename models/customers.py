@@ -21,7 +21,9 @@ async def get_or_create_customer(
     license_id: int,
     phone: str = None,
     email: str = None,
-    name: str = None
+    name: str = None,
+    has_whatsapp: bool = False,
+    has_telegram: bool = False
 ) -> dict:
     """Get existing customer or create new one (SQLite & PostgreSQL compatible)."""
     
@@ -78,10 +80,10 @@ async def get_or_create_customer(
                 await execute_sql(
                     db,
                     """
-                    INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment, profile_pic_url)
-                    VALUES (?, ?, ?, ?, 0, 'New', ?)
+                    INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment, profile_pic_url, has_whatsapp, has_telegram)
+                    VALUES (?, ?, ?, ?, 0, 'New', ?, ?, ?)
                     """,
-                    [license_id, name, phone, email, None]
+                    [license_id, name, phone, email, None, has_whatsapp, has_telegram]
                 )
             except Exception as e:
                 # Fallback check for missing auto-increment
@@ -93,10 +95,10 @@ async def get_or_create_customer(
                     await execute_sql(
                         db,
                         """
-                        INSERT INTO customers (id, license_key_id, name, phone, email, lead_score, segment, profile_pic_url)
-                        VALUES (?, ?, ?, ?, ?, 0, 'New', ?)
+                        INSERT INTO customers (id, license_key_id, name, phone, email, lead_score, segment, profile_pic_url, has_whatsapp, has_telegram)
+                        VALUES (?, ?, ?, ?, ?, 0, 'New', ?, ?, ?)
                         """,
-                        [next_id, license_id, name, phone, email, None]
+                        [next_id, license_id, name, phone, email, None, has_whatsapp, has_telegram]
                     )
                 else:
                     raise e
@@ -120,10 +122,10 @@ async def get_or_create_customer(
             await execute_sql(
                 db,
                 """
-                INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment, profile_pic_url)
-                VALUES (?, ?, ?, ?, 0, 'New', ?)
+                INSERT INTO customers (license_key_id, name, phone, email, lead_score, segment, profile_pic_url, has_whatsapp, has_telegram)
+                VALUES (?, ?, ?, ?, 0, 'New', ?, ?, ?)
                 """,
-                [license_id, name, phone, email, None]
+                [license_id, name, phone, email, None, has_whatsapp, has_telegram]
             )
             await commit_db(db)
             
@@ -200,7 +202,7 @@ async def update_customer(
     **kwargs
 ) -> bool:
     """Update customer details"""
-    allowed_fields = ['name', 'phone', 'email', 'company', 'notes', 'tags', 'is_vip', 'profile_pic_url']
+    allowed_fields = ['name', 'phone', 'email', 'company', 'notes', 'tags', 'is_vip', 'profile_pic_url', 'has_whatsapp', 'has_telegram']
     updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
     
     if not updates:

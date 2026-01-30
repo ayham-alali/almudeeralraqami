@@ -372,6 +372,8 @@ async def init_customers_and_analytics():
                 is_vip BOOLEAN DEFAULT FALSE,
                 segment TEXT,
                 lead_score INTEGER DEFAULT 0,
+                has_whatsapp BOOLEAN DEFAULT FALSE,
+                has_telegram BOOLEAN DEFAULT FALSE,
                 created_at {TIMESTAMP_NOW},
                 FOREIGN KEY (license_key_id) REFERENCES license_keys(id)
             )
@@ -383,6 +385,12 @@ async def init_customers_and_analytics():
         except: pass
         try:
             await execute_sql(db, "ALTER TABLE customers ADD COLUMN IF NOT EXISTS lead_score INTEGER DEFAULT 0")
+        except: pass
+        try:
+            await execute_sql(db, "ALTER TABLE customers ADD COLUMN IF NOT EXISTS has_whatsapp BOOLEAN DEFAULT FALSE")
+        except: pass
+        try:
+            await execute_sql(db, "ALTER TABLE customers ADD COLUMN IF NOT EXISTS has_telegram BOOLEAN DEFAULT FALSE")
         except: pass
         try:
             await execute_sql(db, "ALTER TABLE customers ADD COLUMN IF NOT EXISTS contact TEXT")

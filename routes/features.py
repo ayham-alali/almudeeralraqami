@@ -47,6 +47,8 @@ class CustomerUpdate(BaseModel):
     notes: Optional[str] = None
     tags: Optional[str] = None
     is_vip: Optional[bool] = None
+    has_whatsapp: Optional[bool] = None
+    has_telegram: Optional[bool] = None
 
 
 class CustomerCreate(BaseModel):
@@ -55,6 +57,8 @@ class CustomerCreate(BaseModel):
     email: Optional[str] = None
     company: Optional[str] = None
     notes: Optional[str] = None
+    has_whatsapp: bool = False
+    has_telegram: bool = False
 
 
 # ============ Customers Routes ============
@@ -69,7 +73,9 @@ async def add_customer(
         license["license_id"],
         phone=sanitize_phone(data.phone) if data.phone else None,
         email=sanitize_email(data.email) if data.email else None,
-        name=sanitize_string(data.name, max_length=200)
+        name=sanitize_string(data.name, max_length=200),
+        has_whatsapp=data.has_whatsapp,
+        has_telegram=data.has_telegram
     )
     
     # If customer was created or found, update notes/company if provided
