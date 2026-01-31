@@ -16,7 +16,6 @@ MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 20 * 1024 * 1024))  # 20MB
 async def get_library_items(
     license_id: int, 
     customer_id: Optional[int] = None,
-    customer_id: Optional[int] = None,
     item_type: Optional[str] = None,
     search_term: Optional[str] = None,
     limit: int = 50,
