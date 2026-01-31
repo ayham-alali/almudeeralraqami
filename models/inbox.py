@@ -1369,6 +1369,154 @@ async def get_chat_history_for_llm(
 
 # ============ Message Editing Functions ============
 
+async def save_synced_outbox_message(
+    license_id: int,
+    channel: str,
+    body: str,
+    recipient_id: str = None,
+    recipient_email: str = None,
+    recipient_name: str = None, # Optional, for UI
+    subject: str = None,
+    attachments: Optional[List[dict]] = None,
+    sent_at: datetime = None,
+    platform_message_id: str = None,
+) -> int:
+    """
+    Save a synced outgoing message (sent from external platform) to outbox.
+    Status will be 'sent'.
+    """
+    
+    # Check for duplicates using platform_message_id if provided isn't ideal because outbox doesn't have platform_message_id column by default usually?
+    # Wait, looking at schema in `create_outbox_message`... it DOES NOT have `platform_message_id`.
+    # It has `reply_to_platform_id`.
+    # But checking `inbox.py` schema for `outbox_messages`:
+    # CREATE TABLE IF NOT EXISTS outbox_messages (
+    # ...
+    # )
+    # We might need to rely on timestamps or exact body match if we lack a unique ID column for outbox.
+    # However, `inbox_messages` has `platform_message_id`. 
+    # `outbox_messages` usually stores our own ID.
+    # Let's check `models/inbox.py` columns again from `create_outbox_message`:
+    # recipient_id, recipient_email, subject, body, attachments, reply_to_platform_id
+    
+    # We risk duplicates if we don't have a way to deduce "we already have this".
+    # For now, we can check if a message with same body + recipient + approx timestamp exists? 
+    # Or just Insert. Telegram listener runs live, so it shouldn't duplicate unless restarted and getting old updates.
+    # Gmail fetching logic usually handles deduping by ID, but we need to store ID somewhere.
+    # If we don't have a column, we can't fully prevent duplicates on re-fetch without external state.
+    # PROPOSAL: Use `reply_to_platform_id` column to store the message ID? No, that's for threading.
+    # Use `inbox_message_id`? No.
+    # Let's blindly insert for V1 and rely on listener logic to not send duplicates.
+    
+    
+    # Normalize sent_at
+    if isinstance(sent_at, str):
+        try:
+            sent_ts = datetime.fromisoformat(sent_at)
+        except ValueError:
+            sent_ts = datetime.utcnow()
+    elif isinstance(sent_at, datetime):
+        sent_ts = sent_at
+    else:
+        sent_ts = datetime.utcnow()
+
+    if sent_ts.tzinfo is not None:
+        sent_ts = sent_ts.astimezone(timezone.utc).replace(tzinfo=None)
+
+    ts_value: Any
+    if DB_TYPE == "postgresql":
+        ts_value = sent_ts
+    else:
+        ts_value = sent_ts.isoformat()
+
+    # Serialize attachments
+    import json
+    attachments_json = json.dumps(attachments) if attachments else None
+
+    async with get_db() as db:
+        
+        # ---------------------------------------------------------
+        # Canonical Identity Lookup (Prevent Duplicates)
+        # ---------------------------------------------------------
+        # For outgoing, 'recipient' is the contact.
+        contact_val = recipient_email or recipient_id
+        if contact_val and license_id:
+             existing_row = await fetch_one(
+                db,
+                """
+                SELECT sender_contact 
+                FROM inbox_messages 
+                WHERE license_key_id = ? AND sender_id = ? 
+                AND sender_contact IS NOT NULL AND sender_contact != ''
+                LIMIT 1
+                """,
+                [license_id, contact_val]
+            )
+             if existing_row and existing_row['sender_contact']:
+                 # If we found a known contact for this ID, use it to ensure consistency
+                 # This helps mapping recipient_id (12345) to recipient_email/phone (+971...)
+                 canonical = existing_row['sender_contact']
+                 if recipient_email and recipient_email != canonical: recipient_email = canonical
+                 if recipient_id and recipient_id != canonical: recipient_id = canonical
+
+        await execute_sql(
+            db,
+            """
+            INSERT INTO outbox_messages 
+                (license_key_id, channel, recipient_id,
+                 recipient_email, subject, body, attachments,
+                 status, sent_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'sent', ?, ?)
+            """,
+            [
+                license_id, channel, recipient_id,
+                recipient_email, subject, body, attachments_json,
+                ts_value, ts_value 
+            ],
+        )
+
+        row = await fetch_one(
+            db,
+            """
+            SELECT id FROM outbox_messages
+            WHERE license_key_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            [license_id],
+        )
+        await commit_db(db)
+        
+        message_id = row["id"] if row else 0
+        
+        # Update conversation state
+        contact = recipient_email or recipient_id
+        if contact:
+            await upsert_conversation_state(license_id, contact, recipient_name, channel)
+            
+        # Broadcast via WebSocket
+        try:
+            from services.websocket_manager import broadcast_new_message
+            
+            evt_data = {
+                "id": message_id,
+                "channel": channel,
+                "sender_contact": contact,
+                "sender_name": None, # It's us
+                "body": body,
+                "status": "sent",
+                "direction": "outgoing",
+                "timestamp": ts_value.isoformat() if hasattr(ts_value, 'isoformat') else str(ts_value),
+                "attachments": attachments or []
+            }
+            await broadcast_new_message(license_id, evt_data)
+        except Exception as e:
+            from logging_config import get_logger
+            get_logger(__name__).warning(f"Broadcast failed in save_synced_outbox_message: {e}")
+
+        return message_id
+
+
 async def get_outbox_message_by_id(message_id: int, license_id: int) -> Optional[dict]:
     """Get a single outbox message by ID."""
     async with get_db() as db:

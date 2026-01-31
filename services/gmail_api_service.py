@@ -373,9 +373,9 @@ class GmailAPIService:
         """
         # Build Gmail search query
         if since_hours == 24:
-            query = "is:unread OR newer_than:1d"
+            query = "is:unread OR newer_than:1d OR label:SENT"
         else:
-            query = f"newer_than:{since_hours}h"
+            query = f"newer_than:{since_hours}h"   
         
         # List messages
         messages_result = await self.list_messages(query=query, max_results=limit)
@@ -407,6 +407,9 @@ class GmailAPIService:
         sender_email = self._extract_email_address(from_header)
         sender_name = self._extract_name(from_header)
         
+        # New: Extract To header
+        to_header = headers.get("to", "")
+        
         # Get body
         body = self._extract_body(payload)
         
@@ -426,9 +429,9 @@ class GmailAPIService:
             "subject": headers.get("subject", ""),
             "sender_name": sender_name or sender_email.split("@")[0],
             "sender_contact": sender_email,
+            "to": to_header,  # Added for outgoing sync
             "body": body,
             "received_at": received_at,
-            "raw_from": from_header,
             "raw_from": from_header,
             "attachments": attachments
         }

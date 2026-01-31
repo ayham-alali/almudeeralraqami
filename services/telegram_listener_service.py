@@ -221,14 +221,26 @@ class TelegramListenerService:
                 except Exception as e:
                     logger.debug(f"Error handling Telegram UserUpdate: {e}")
 
-            # 2. New Message (Incoming)
-            @client.on(events.NewMessage(incoming=True))
+            # 2. New Message (Incoming & Outgoing for Sync)
+            @client.on(events.NewMessage)
             async def msg_handler(event):
                 try:
                     # Filter: Only private chats or small groups? 
                     # For now process everything, filtering happens inside analysis
                     
                     sender = await event.get_sender()
+                    recipient = None 
+                    
+                    # If Outgoing, we need the recipient (peer)
+                    if event.out:
+                        try:
+                             # For outgoing, sender is us (me). We want the Peer (recipient)
+                             # event.chat_id is the ID of the chat (User/Group/Channel)
+                             # event.get_chat() returns the entity
+                             recipient = await event.get_chat()
+                        except:
+                             pass
+
                     
                     # PERSIST ENTITY HASH (Senior Backend Fix for Stateless Sessions)
                     if sender and hasattr(sender, 'access_hash') and sender.access_hash:
@@ -283,8 +295,86 @@ class TelegramListenerService:
                     from models import get_inbox_messages
                     # A better way is to rely on `save_inbox_message` ignoring duplicates or returning existing ID
                     
-                    # Filter own messages (should be covered by incoming=True but just in case)
+                    # NEW: Handle Outgoing Sync
                     if event.out:
+                        # Skip if it is a bot command? No, we might want to see that.
+                        # Skip automated internal messages?
+                        
+                        recipient_id = str(event.chat_id)
+                        recipient_name = getattr(recipient, 'title', None) or \
+                                         f"{getattr(recipient, 'first_name', '')} {getattr(recipient, 'last_name', '')}".strip() or \
+                                         getattr(recipient, 'username', None) or \
+                                         "Unknown"
+                                         
+                        recipient_contact = None
+                        if hasattr(recipient, 'phone') and recipient.phone:
+                             p = recipient.phone
+                             recipient_contact = "+" + p if p.isdigit() else p
+                        elif hasattr(recipient, 'username') and recipient.username:
+                             recipient_contact = f"@{recipient.username}"
+                        else:
+                             recipient_contact = recipient_id
+
+                        # Handle media for outgoing
+                        # (Reused code for media extraction - refactor if possible but copy-paste is safer for now)
+                        attachments = []
+                        if event.message.media:
+                            try:
+                                size = 0
+                                is_voice = False
+                                if hasattr(event.message.media, "document") and event.message.media.document:
+                                    size = event.message.media.document.size
+                                    for attribute in event.message.media.document.attributes:
+                                        if hasattr(attribute, 'voice') and attribute.voice:
+                                            is_voice = True
+                                            break
+                                
+                                if size < 20 * 1024 * 1024:
+                                    file_bytes = await event.message.download_media(file=bytes)
+                                    if file_bytes:
+                                        mime_type = "application/octet-stream"
+                                        if hasattr(event.message.media, "photo"):
+                                            mime_type = "image/jpeg"
+                                        elif hasattr(event.message.media, "document"):
+                                            mime_type = event.message.media.document.mime_type
+                                        
+                                        filename = f"tg_out_{channel_message_id}"
+                                        rel_path, abs_url = get_file_storage().save_file(
+                                            content=file_bytes,
+                                            filename=filename,
+                                            mime_type=mime_type
+                                        )
+                                        
+                                        b64_data = None
+                                        if size < 1 * 1024 * 1024:
+                                            try:
+                                                b64_data = base64.b64encode(file_bytes).decode('utf-8')
+                                            except: pass
+                                            
+                                        attachments.append({
+                                            "type": "voice" if is_voice else mime_type,
+                                            "mime_type": mime_type,
+                                            "url": abs_url,
+                                            "path": rel_path,
+                                            "base64": b64_data,
+                                            "filename": filename,
+                                            "size": size
+                                        })
+                            except: pass
+
+                        from models.inbox import save_synced_outbox_message
+                        await save_synced_outbox_message(
+                             license_id=license_id,
+                             channel="telegram",
+                             body=body or ("[Media]" if attachments else ""),
+                             recipient_id=recipient_id,
+                             recipient_email=recipient_contact, # Using email field for contact
+                             recipient_name=recipient_name,
+                             attachments=attachments,
+                             sent_at=event.message.date,
+                             platform_message_id=channel_message_id
+                        )
+                        logger.info(f"Saved synced outgoing Telegram message to {recipient_name}")
                         return
 
                     # Filter specific unwanted updates (e.g. pinned message service msg)

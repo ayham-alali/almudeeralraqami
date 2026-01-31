@@ -603,9 +603,37 @@ class MessagePoller:
                 # CRITICAL: Skip emails sent BY US to prevent AI loop
                 sender_email = (email_data.get("sender_contact") or "").lower()
                 if our_email_address and sender_email == our_email_address:
-                    logger.debug(f"Skipping self-sent email from {sender_email}")
-                    continue
-                
+                    # NEW: Sync outgoing emails to outbox
+                    logger.debug(f"Syncing self-sent email to outbox: {email_data.get('subject')}")
+                    
+                    # Parse 'To' header to get primary recipient
+                    to_header = email_data.get("to", "")
+                    recipient_email = ""
+                    recipient_name = ""
+                    
+                    if to_header:
+                        # Simple extraction, first email found
+                        # You might use self.gmail_service._extract_email_address if accessible, or simple split
+                        # gmail_service is available in local scope
+                        recipient_name, recipient_email = gmail_service._extract_email_address(to_header)
+                    
+                    if not recipient_email:
+                        recipient_email = "Unknown"
+
+                    from models.inbox import save_synced_outbox_message
+                    await save_synced_outbox_message(
+                        license_id=license_id,
+                        channel="email",
+                        body=email_data["body"] or "",
+                        recipient_email=recipient_email,
+                        recipient_name=recipient_name,
+                        subject=email_data.get("subject"),
+                        attachments=email_data.get("attachments", []),
+                        sent_at=email_data.get("received_at"),
+                        platform_message_id=email_data.get("channel_message_id")
+                    )
+                    continue 
+
                 # Check if we already have this message
                 existing = await self._check_existing_message(
                     license_id, "email", email_data.get("channel_message_id")
