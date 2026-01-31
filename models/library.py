@@ -16,7 +16,9 @@ MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 20 * 1024 * 1024))  # 20MB
 async def get_library_items(
     license_id: int, 
     customer_id: Optional[int] = None,
+    customer_id: Optional[int] = None,
     item_type: Optional[str] = None,
+    search_term: Optional[str] = None,
     limit: int = 50,
     offset: int = 0
 ) -> List[dict]:
@@ -31,6 +33,11 @@ async def get_library_items(
     if item_type:
         query += " AND type = ?"
         params.append(item_type)
+
+    if search_term:
+        query += " AND (title LIKE ? OR content LIKE ?)"
+        search_pattern = f"%{search_term}%"
+        params.extend([search_pattern, search_pattern])
         
     query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])

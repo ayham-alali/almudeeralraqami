@@ -45,6 +45,7 @@ class BulkDeleteRequest(BaseModel):
 async def list_items(
     customer_id: Optional[int] = None,
     type: Optional[str] = None,
+    search: Optional[str] = Query(None, description="Search term for title or content"),
     page: int = 1,
     page_size: int = 50,
     license: dict = Depends(get_license_from_header)
@@ -55,6 +56,7 @@ async def list_items(
         license_id=license["license_id"],
         customer_id=customer_id,
         item_type=type,
+        search_term=search,
         limit=page_size,
         offset=offset
     )
