@@ -370,28 +370,8 @@ async def save_telegram_entity(
     async with get_db() as db:
         now = datetime.now() if DB_TYPE == "postgresql" else datetime.now().isoformat()
         
-        # PostgreSQL specific 'ON CONFLICT' is cleaner, but let's stay compatible
-        existing = await fetch_one(
-            db,
-            "SELECT id FROM telegram_entities WHERE license_key_id = ? AND entity_id = ?",
-            [license_id, str(entity_id)]
-        )
-        
-        if existing:
-            await execute_sql(
-                db,
-                """
-                UPDATE telegram_entities SET
-                    access_hash = ?,
-                    entity_type = ?,
-                    username = ?,
-                    phone = ?,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                [str(access_hash), entity_type, username, phone, now, existing["id"]]
-            )
-        else:
+        # Try to insert first (Optimistic approach)
+        try:
             await execute_sql(
                 db,
                 """
@@ -401,6 +381,28 @@ async def save_telegram_entity(
                 """,
                 [license_id, str(entity_id), str(access_hash), entity_type, username, phone, now]
             )
+        except Exception as e:
+            # Check for unique constraint violation (duplicate key)
+            # SQLite: "UNIQUE constraint failed"
+            # Postgres: "duplicate key value violates unique constraint"
+            err_msg = str(e).lower()
+            if "unique" in err_msg or "duplicate key" in err_msg:
+                # Race condition hit - update instead
+                await execute_sql(
+                    db,
+                    """
+                    UPDATE telegram_entities SET
+                        access_hash = ?,
+                        entity_type = ?,
+                        username = ?,
+                        phone = ?,
+                        updated_at = ?
+                    WHERE license_key_id = ? AND entity_id = ?
+                    """,
+                    [str(access_hash), entity_type, username, phone, now, license_id, str(entity_id)]
+                )
+            else:
+                raise e
             
         await commit_db(db)
         return True

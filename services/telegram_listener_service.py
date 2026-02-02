@@ -301,8 +301,23 @@ class TelegramListenerService:
                         # Skip automated internal messages?
                         
                         recipient_id = str(event.chat_id)
+
+                        # EXCLUDE Channel Posts (Outgoing)
+                        # If I post to my own channel, it shouldn't show in inbox.
+                        if event.is_channel and event.out:
+                            logger.info(f"Ignoring Telegram Channel Post for license {license_id}")
+                            return
+
+                        # EXCLUDE "Saved Messages" (Self-Chat)
+                        # If I am sending a message to myself, ignore it.
+                        if getattr(sender, 'id', None) and recipient_id == str(sender.id):
+                            logger.info(f"Ignoring Telegram 'Saved Messages' (Self-Chat) for license {license_id}")
+                            return
+
+                        fn = getattr(recipient, 'first_name', None) or ""
+                        ln = getattr(recipient, 'last_name', None) or ""
                         recipient_name = getattr(recipient, 'title', None) or \
-                                         f"{getattr(recipient, 'first_name', '')} {getattr(recipient, 'last_name', '')}".strip() or \
+                                         f"{fn} {ln}".strip() or \
                                          getattr(recipient, 'username', None) or \
                                          "Unknown"
                                          

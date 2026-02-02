@@ -294,6 +294,51 @@ async def receive_webhook(request: Request):
                 for msg in messages:
                     # Apply Filters (Spam, Groups, etc.)
                     # We pass empty list for recent_messages for now (optional optimization)
+                    sender_contact_raw = msg.get("sender_phone", "")
+                    
+                    # EXCLUDE "Saved Messages" (Self-Chat) for WhatsApp
+                    # If the sender is the same as the business itself.
+                    # Note: We verify against config data if possible, or just standard "me" check if we had it.
+                    # Determine current business phone number from database config
+                    # 'config' is available from the outer scope lookup
+                    
+                    # 1. Compare 'from' ID with 'phone_number_id' of the business
+                    # msg['from'] might be the user's phone ID or phone number. 
+                    # Usually msg['from'] is the phone number (w/o +).
+                    # config['phone_number_id'] is the ID.
+                    # We can't strictly compare ID vs Phone.
+                    # However, if it's a self-message, the 'from' usually matches the business phone number.
+                    
+                    # Better check:
+                    # In a self-chat, the user messages themselves.
+                    # The webhook event usually has 'from' = sender.
+                    # Use a heuristic or strict check if we have the business phone number stored.
+                    # The 'config' object from DB has: phone_number_id, access_token, etc.
+                    # It might NOT have the raw phone number unless we stored it in whatsapp_configs (we don't seem to).
+                    
+                    # Alternative: Check if 'is_echo' if that exists, or relying on the fact that 
+                    # if the sender IS the business account, we skip.
+                    # But we don't know our own number easily here without an API call.
+                    # Let's assume for now that if we are processing it, it's incoming.
+                    # "Saved Messages" on WhatsApp from the App:
+                    # User sends message to THEIR OWN number.
+                    # Webhook: from = User Number, to = User Number.
+                    # This looks just like any other message from User Number.
+                    # WAIT: The config is found by looking up `phone_number_id` from metadata.
+                    # The metadata.phone_number_id is the receiver (Business).
+                    # If msg['from'] (Sender) == metadata.display_phone_number (Business), then it's self.
+                    
+                    try:
+                        metadata = value.get("metadata", {})
+                        business_phone = metadata.get("display_phone_number", "").replace(" ", "").replace("+", "")
+                        sender_phone = str(msg.get("from", "")).replace(" ", "").replace("+", "")
+                        
+                        if business_phone and sender_phone and business_phone in sender_phone:
+                             print(f"Ignoring WhatsApp 'Saved Messages' (Self-Chat) from {sender_phone}")
+                             continue
+                    except:
+                        pass
+
                     filter_msg = {
                         "body": msg.get("body", ""),
                         "sender_contact": msg.get("sender_phone"),

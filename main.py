@@ -1029,10 +1029,18 @@ async def get_user_info(license: dict = Depends(verify_license)):
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    logger.warning(
-        f"HTTP {exc.status_code} error: {exc.detail}",
-        extra={"extra_fields": {"path": request.url.path, "method": request.method}}
-    )
+    # Reduce noise: 404 errors are normal and shouldn't be Warnings
+    if exc.status_code == 404:
+        logger.info(
+            f"HTTP 404 Not Found: {exc.detail}",
+            extra={"extra_fields": {"path": request.url.path}}
+        )
+    else:
+        logger.warning(
+            f"HTTP {exc.status_code} error: {exc.detail}",
+            extra={"extra_fields": {"path": request.url.path, "method": request.method}}
+        )
+        
     return JSONResponse(
         status_code=exc.status_code,
         content={"success": False, "error": exc.detail}
