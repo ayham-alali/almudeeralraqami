@@ -176,5 +176,9 @@ async def bulk_delete(
     license: dict = Depends(get_license_from_header)
 ):
     """Bulk delete items."""
-    count = await bulk_delete_items(license["license_id"], data.item_ids)
+    valid_ids = [id for id in data.item_ids if id <= 2147483647]
+    if not valid_ids:
+        return {"success": True, "deleted_count": 0}
+        
+    count = await bulk_delete_items(license["license_id"], valid_ids)
     return {"success": True, "deleted_count": count}
