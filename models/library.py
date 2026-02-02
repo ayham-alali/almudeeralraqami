@@ -17,11 +17,12 @@ async def get_library_items(
     license_id: int, 
     customer_id: Optional[int] = None,
     item_type: Optional[str] = None,
+    category: Optional[str] = None,
     search_term: Optional[str] = None,
     limit: int = 50,
     offset: int = 0
 ) -> List[dict]:
-    """Get library items for a license, optionally filtered by customer or type."""
+    """Get library items for a license, optionally filtered by customer, type or category."""
     query = "SELECT * FROM library_items WHERE license_key_id = ? AND deleted_at IS NULL"
     params = [license_id]
     
@@ -29,7 +30,14 @@ async def get_library_items(
         query += " AND customer_id = ?"
         params.append(customer_id)
         
-    if item_type:
+    if category:
+        if category == 'notes':
+            query += " AND type = 'note'"
+        elif category == 'files':
+            query += " AND type IN ('image', 'audio', 'video', 'file')"
+        elif category == 'tools':
+            query += " AND type = 'tool'"
+    elif item_type:
         query += " AND type = ?"
         params.append(item_type)
 
