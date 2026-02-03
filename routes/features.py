@@ -154,7 +154,7 @@ async def update_customer_detail(
         **raw_data
     )
     if not success:
-        raise HTTPException(status_code=400, detail="فشل التحديث")
+        raise HTTPException(status_code=404, detail="العميل غير موجود")
     
     # Fetch and return the updated customer object for frontend sync
     from models.customers import get_customer
