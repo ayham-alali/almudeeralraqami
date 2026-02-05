@@ -235,6 +235,7 @@ async def update_inbox_analysis(
                         "channel": message_row["channel"],
                         "timestamp": datetime.utcnow().isoformat(),
                         "status": "analyzed",
+                        "direction": "incoming",
                     }
                 )
             except Exception as e:
