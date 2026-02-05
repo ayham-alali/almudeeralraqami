@@ -405,11 +405,20 @@ async def check_app_version(request: Request):
     # Check if update is currently active
     is_active, active_reason = _is_update_active(update_config)
     
+    # Append cache-busting query params to update URL
+    # This prevents the "Update Loop" where users download cached old APKs
+    final_update_url = _APP_DOWNLOAD_URL
+    if "almudeer.apk" in final_update_url:
+        min_build = await _get_min_build_number()
+        ts = int(time.time())
+        separator = "&" if "?" in final_update_url else "?"
+        final_update_url = f"{final_update_url}{separator}v={min_build}&t={ts}"
+
     return {
         # Core version info
         "min_build_number": await _get_min_build_number(),
         "current_version": _APP_VERSION,
-        "update_url": _APP_DOWNLOAD_URL,
+        "update_url": final_update_url,
         
         # Update behavior
         "force_update": _FORCE_UPDATE_ENABLED,
@@ -785,7 +794,11 @@ async def download_apk():
         media_type="application/vnd.android.package-archive",
         headers={
             "Content-Disposition": "attachment; filename=almudeer.apk",
-            "Accept-Ranges": "bytes"
+            "Accept-Ranges": "bytes",
+            # Critical: Prevent caching of the APK file
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
         }
     )
 
