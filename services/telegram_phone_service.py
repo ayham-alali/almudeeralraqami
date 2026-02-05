@@ -26,14 +26,73 @@ from services.file_storage_service import get_file_storage
 # MIME type mapping for Telegram media
 def get_mime_type_from_ext(file_ext: str) -> str:
     ext = file_ext.lower().replace('.', '')
+    
+    # Images
     if ext in ['jpg', 'jpeg']: return 'image/jpeg'
     if ext == 'png': return 'image/png'
+    if ext == 'gif': return 'image/gif'
     if ext == 'webp': return 'image/webp'
-    if ext == 'pdf': return 'application/pdf'
+    if ext == 'bmp': return 'image/bmp'
+    if ext == 'svg': return 'image/svg+xml'
+    
+    # Video
     if ext == 'mp4': return 'video/mp4'
+    if ext == 'mov': return 'video/quicktime'
+    if ext == 'avi': return 'video/x-msvideo'
+    if ext == 'mkv': return 'video/x-matroska'
+    if ext == 'webm': return 'video/webm'
+    
+    # Audio
     if ext == 'mp3': return 'audio/mpeg'
-    if ext in ['m4a', 'ogg']: return 'audio/ogg' # Generalize for voice
+    if ext in ['m4a', 'ogg']: return 'audio/ogg'
     if ext == 'wav': return 'audio/wav'
+    if ext == 'flac': return 'audio/flac'
+    if ext == 'aac': return 'audio/aac'
+    
+    # Documents
+    if ext == 'pdf': return 'application/pdf'
+    if ext in ['doc', 'docx']: return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    if ext in ['xls', 'xlsx']: return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    if ext in ['ppt', 'pptx']: return 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    if ext == 'csv': return 'text/csv'
+    
+    # Archives
+    if ext == 'zip': return 'application/zip'
+    if ext == 'rar': return 'application/vnd.rar'
+    if ext in ['7z', 'tar', 'gz']: return 'application/x-compressed'
+    
+    # Android
+    if ext == 'apk': return 'application/vnd.android.package-archive'
+    if ext == 'aab': return 'application/octet-stream'
+    
+    # Code files (treat as text for proper handling)
+    if ext in ['dart', 'py', 'pyw', 'js', 'jsx', 'mjs', 'ts', 'tsx',
+               'java', 'kt', 'kts', 'swift', 'go', 'rs', 'rb', 'php',
+               'c', 'h', 'cpp', 'hpp', 'cc', 'cxx', 'm', 'mm',
+               'scala', 'groovy', 'lua', 'pl', 'r']:
+        return 'text/plain'
+    
+    # Web
+    if ext in ['html', 'htm']: return 'text/html'
+    if ext in ['css', 'scss', 'less']: return 'text/css'
+    if ext in ['vue', 'svelte']: return 'text/plain'
+    
+    # Shell scripts
+    if ext in ['sh', 'bash', 'zsh', 'bat', 'cmd', 'ps1']:
+        return 'text/plain'
+    
+    # Config/Data
+    if ext == 'json': return 'application/json'
+    if ext in ['yaml', 'yml']: return 'text/yaml'
+    if ext == 'xml': return 'application/xml'
+    if ext in ['ini', 'conf', 'cfg', 'env', 'properties']:
+        return 'text/plain'
+    if ext == 'sql': return 'text/plain'
+    
+    # Markdown/Text
+    if ext in ['md', 'markdown']: return 'text/markdown'
+    if ext in ['txt', 'log']: return 'text/plain'
+    
     return 'application/octet-stream'
 
 class TelegramPhoneService:
