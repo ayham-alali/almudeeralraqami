@@ -5,92 +5,75 @@ Handles saving media files to the local filesystem and generating accessible URL
 
 import os
 import uuid
-import mimetypes
 import logging
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Base directory for uploads
-# Should be in a location served by FastAPI
-UPLOAD_DIR = os.getenv("UPLOAD_DIR", "static/uploads")
+# Base directory for uploads (configurable for persistence, e.g. Railway volume)
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(os.getcwd(), "static", "uploads"))
 
-# Base URL for accessing files
-# This will be used to construct the 'url' field in attachments
-# In production, this should be the public URL
-BASE_URL = os.getenv("BASE_URL", "").rstrip("/")
+# Base URL prefix for accessing files
+UPLOAD_URL_PREFIX = os.getenv("UPLOAD_URL_PREFIX", "/static/uploads")
 
 class FileStorageService:
     """Service for managing media file storage"""
     
     def __init__(self, upload_dir: str = UPLOAD_DIR):
         self.upload_dir = upload_dir
+        self.url_prefix = UPLOAD_URL_PREFIX.rstrip("/")
+        
         # Ensure upload directory exists
         if not os.path.exists(self.upload_dir):
             os.makedirs(self.upload_dir, exist_ok=True)
             logger.info(f"Created upload directory: {self.upload_dir}")
             
-    def save_file(self, content: bytes, filename: Optional[str] = None, mime_type: Optional[str] = None) -> Tuple[str, str]:
+    def save_file(self, content: bytes, filename: str, mime_type: str, subfolder: str = None) -> Tuple[str, str]:
         """
         Save bytes to a file and return (relative_path, accessible_url)
         
         Args:
             content: Raw file bytes
-            filename: Original filename (if available)
+            filename: Original filename
             mime_type: MIME type of the file
+            subfolder: Optional subfolder (e.g. 'library', 'voice')
             
         Returns:
             Tuple of (relative_file_path, public_url)
         """
         try:
-            # 1. Determine extension
-            ext = ""
-            if mime_type:
-                ext = mimetypes.guess_extension(mime_type) or ""
-            elif filename:
-                _, ext = os.path.splitext(filename)
-                
-            # 2. Generate unique filename to avoid collisions
-            unique_filename = f"{uuid.uuid4().hex}{ext}"
-            
-            # 3. Determine subfolder based on mime_type (premium organization)
-            subfolder = "other"
-            if mime_type:
+            # Determine subfolder if not provided
+            if not subfolder:
                 if mime_type.startswith("image/"):
                     subfolder = "images"
-                elif mime_type.startswith("video/"):
-                    subfolder = "videos"
                 elif mime_type.startswith("audio/"):
                     subfolder = "audio"
-                elif "pdf" in mime_type:
+                elif mime_type.startswith("video/"):
+                    subfolder = "video"
+                else:
                     subfolder = "docs"
             
-            # Create subfolder if missing
-            full_subfolder_path = os.path.join(self.upload_dir, subfolder)
-            if not os.path.exists(full_subfolder_path):
-                os.makedirs(full_subfolder_path, exist_ok=True)
-                
-            # 4. Save to disk
-            relative_path = os.path.join(subfolder, unique_filename).replace("\\", "/")
-            full_path = os.path.join(self.upload_dir, relative_path)
+            # Create subfolder inside upload_dir
+            target_dir = os.path.join(self.upload_dir, subfolder)
+            os.makedirs(target_dir, exist_ok=True)
             
-            with open(full_path, "wb") as f:
+            # Unique filename to avoid collisions
+            unique_id = uuid.uuid4().hex
+            ext = os.path.splitext(filename)[1] or ".bin"
+            unique_filename = f"{unique_id}{ext}"
+            
+            # Full path for saving
+            file_path = os.path.join(target_dir, unique_filename)
+            
+            with open(file_path, "wb") as f:
                 f.write(content)
-            
-            # 5. Construct URL
-            # The static/ directory is usually mounted at /static
-            # relative_path is something like 'images/abc.png'
-            # Full URL: /static/uploads/images/abc.png
-            url_path = f"/static/uploads/{relative_path}"
-            
-            # If BASE_URL is provided, prepend it
-            if BASE_URL:
-                final_url = f"{BASE_URL}{url_path}"
-            else:
-                final_url = url_path
                 
-            logger.info(f"Saved file: {relative_path} (URL: {final_url})")
-            return relative_path, final_url
+            # Relative path for standard serving (forward slashes)
+            relative_path = os.path.join(subfolder, unique_filename).replace("\\", "/")
+            public_url = f"{self.url_prefix}/{relative_path}"
+            
+            logger.info(f"Saved file: {relative_path} (URL: {public_url})")
+            return relative_path, public_url
             
         except Exception as e:
             logger.error(f"Failed to save file: {e}")

@@ -114,7 +114,8 @@ async def upload_voice_message(
         _, audio_url = file_storage.save_file(
             content=file_data,
             filename=file.filename,
-            mime_type=file.content_type
+            mime_type=file.content_type,
+            subfolder="voice"
         )
         
         # Get duration

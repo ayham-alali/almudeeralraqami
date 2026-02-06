@@ -123,7 +123,8 @@ async def upload_file(
         relative_path, public_url = file_storage.save_file(
             content=content,
             filename=file.filename,
-            mime_type=content_type
+            mime_type=content_type,
+            subfolder="library"
         )
         
         file_size = len(content)

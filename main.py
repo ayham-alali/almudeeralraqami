@@ -420,8 +420,13 @@ app.include_router(version_analytics_router)
 from routes.sync import router as sync_router
 app.include_router(sync_router)
 
-# Mount static files directory
-# This allows the mobile app to access uploaded media files at /static/uploads/...
+# Create specific mount for uploads (persistent volume on Railway)
+UPLOAD_DIR = os.getenv("UPLOAD_DIR", os.path.join(os.getcwd(), "static", "uploads"))
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/static/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
+# General static mount for code-relative assets
 static_dir = os.path.join(os.getcwd(), "static")
 if not os.path.exists(static_dir):
     os.makedirs(static_dir, exist_ok=True)
