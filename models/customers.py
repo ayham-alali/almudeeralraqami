@@ -95,6 +95,7 @@ async def get_or_create_customer(
             "id": inserted_id,
             "license_key_id": license_id,
             "name": name,
+            "username": username,
             "phone": phone,
             "email": email,
             "contact": contact_val,
