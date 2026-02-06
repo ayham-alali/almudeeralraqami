@@ -67,6 +67,7 @@ class SubscriptionCreate(BaseModel):
     max_requests_per_day: int = Field(50, description="الحد الأقصى للطلبات اليومية")
     is_trial: bool = Field(False, description="هل هذا اشتراك تجريبي؟")
     referred_by_code: Optional[str] = Field(None, description="كود الإحالة (اختياري)")
+    username: str = Field(..., description="اسم المستخدم الفريد", min_length=2, max_length=50)
 
 
 class SubscriptionResponse(BaseModel):
@@ -91,9 +92,20 @@ class SubscriptionUpdate(BaseModel):
     max_requests_per_day: Optional[int] = Field(None, ge=10, le=100000)
     days_valid_extension: Optional[int] = Field(None, description="إضافة أيام للصلاحية", ge=0, le=3650)
     notes: Optional[str] = Field(None, max_length=500)
+    username: Optional[str] = Field(None, description="اسم المستخدم الجديد", min_length=2, max_length=50)
 
 
 # ============ Routes ============
+
+@router.get("/check-username/{username}")
+async def check_username_availability(username: str):
+    """Check if a username exists and return user info"""
+    from database import get_db, fetch_one
+    async with get_db() as db:
+        row = await fetch_one(db, "SELECT company_name FROM license_keys WHERE username = ?", [username])
+        if row:
+            return {"exists": True, "company_name": row["company_name"]}
+        return {"exists": False}
 
 @router.post("/create", response_model=SubscriptionResponse)
 async def create_subscription(
@@ -111,6 +123,13 @@ async def create_subscription(
     logger = get_logger(__name__)
     
     try:
+        from database import get_db, fetch_one
+        # Check if username is already taken
+        async with get_db() as db:
+            existing = await fetch_one(db, "SELECT id FROM license_keys WHERE username = ?", [subscription.username])
+            if existing:
+                raise HTTPException(status_code=400, detail="اسم المستخدم هذا مستخدم بالفعل")
+
         # Find referrer if code is provided
         referred_by_id = None
         if subscription.referred_by_code:
@@ -125,7 +144,8 @@ async def create_subscription(
             days_valid=subscription.days_valid,
             max_requests=subscription.max_requests_per_day,
             is_trial=subscription.is_trial,
-            referred_by_id=referred_by_id
+            referred_by_id=referred_by_id,
+            username=subscription.username
         )
         
         # Calculate expiration date
@@ -176,7 +196,7 @@ async def list_subscriptions(
                 raise ValueError("DATABASE_URL is required for PostgreSQL")
             conn = await asyncpg.connect(DATABASE_URL)
             try:
-                query = "SELECT id, company_name, contact_email, is_active, created_at, expires_at, max_requests_per_day, requests_today, last_request_date, is_trial, referral_code, referral_count FROM license_keys"
+                query = "SELECT id, company_name, contact_email, username, is_active, created_at, expires_at, max_requests_per_day, requests_today, last_request_date, is_trial, referral_code, referral_count FROM license_keys"
                 params = []
                 
                 if active_only:
@@ -208,7 +228,7 @@ async def list_subscriptions(
             async with aiosqlite.connect(DATABASE_PATH) as db:
                 db.row_factory = aiosqlite.Row
                 
-                query = "SELECT id, company_name, contact_email, is_active, created_at, expires_at, max_requests_per_day, requests_today, last_request_date, is_trial, referral_code, referral_count FROM license_keys"
+                query = "SELECT id, company_name, contact_email, username, is_active, created_at, expires_at, max_requests_per_day, requests_today, last_request_date, is_trial, referral_code, referral_count FROM license_keys"
                 params = []
                 
                 if active_only:
@@ -387,6 +407,14 @@ async def update_subscription(
                 else:
                     updates.append("expires_at = ?")
                     params.append(new_expires.isoformat())
+                param_index += 1
+            
+            if update.username is not None:
+                if DB_TYPE == "postgresql":
+                    updates.append(f"username = ${param_index}")
+                else:
+                    updates.append("username = ?")
+                params.append(update.username)
                 param_index += 1
             
             if not updates:

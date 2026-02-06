@@ -46,17 +46,17 @@ async def init_database():
         conn = await asyncpg.connect(DATABASE_URL)
         try:
             await _init_postgresql_tables(conn)
-            # Add license_key_encrypted column if it doesn't exist (for existing databases)
-            try:
-                await conn.execute("""
-                    ALTER TABLE license_keys 
-                    ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50) UNIQUE,
-                    ADD COLUMN IF NOT EXISTS referred_by_id INTEGER REFERENCES license_keys(id),
-                    ADD COLUMN IF NOT EXISTS is_trial BOOLEAN DEFAULT FALSE,
-                    ADD COLUMN IF NOT EXISTS referral_count INTEGER DEFAULT 0
-                """)
-            except Exception:
-                pass
+            # Add new columns if they don't exist (for existing databases)
+            await conn.execute("""
+                ALTER TABLE license_keys 
+                ADD COLUMN IF NOT EXISTS referral_code VARCHAR(50) UNIQUE,
+                ADD COLUMN IF NOT EXISTS referred_by_id INTEGER REFERENCES license_keys(id),
+                ADD COLUMN IF NOT EXISTS is_trial BOOLEAN DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS referral_count INTEGER DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS username VARCHAR(255) UNIQUE
+            """)
+        except Exception:
+            pass
         finally:
             await conn.close()
     else:
@@ -74,6 +74,9 @@ async def init_database():
             except Exception: pass
             try:
                 await db.execute("ALTER TABLE license_keys ADD COLUMN referral_count INTEGER DEFAULT 0")
+            except Exception: pass
+            try:
+                await db.execute("ALTER TABLE license_keys ADD COLUMN username TEXT UNIQUE")
             except Exception: pass
             await db.commit()
     
@@ -95,6 +98,7 @@ async def _init_sqlite_tables(db):
             license_key_encrypted TEXT,
             company_name TEXT NOT NULL,
             contact_email TEXT,
+            username TEXT UNIQUE,
             is_active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             expires_at TIMESTAMP,
@@ -247,6 +251,7 @@ async def _init_postgresql_tables(conn):
             license_key_encrypted TEXT,
             company_name VARCHAR(255) NOT NULL,
             contact_email VARCHAR(255),
+            username VARCHAR(255) UNIQUE,
             is_active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMP DEFAULT NOW(),
             expires_at TIMESTAMP,
@@ -404,7 +409,8 @@ async def generate_license_key(
     days_valid: int = 365,
     max_requests: int = 50,
     is_trial: bool = False,
-    referred_by_id: Optional[int] = None
+    referred_by_id: Optional[int] = None,
+    username: Optional[str] = None
 ) -> str:
     """Generate a new license key and store it in the database"""
     # Generate a readable license key format: MUDEER-XXXX-XXXX-XXXX
@@ -431,9 +437,9 @@ async def generate_license_key(
             await conn.execute(f"SELECT setval('license_keys_id_seq', {next_id}, false)")
             
             await conn.execute("""
-                INSERT INTO license_keys (id, key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            """, next_id, key_hash, encrypted_key, company_name, expires_at, max_requests, is_trial, referred_by_id, referral_code)
+                INSERT INTO license_keys (id, key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code, username)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            """, next_id, key_hash, encrypted_key, company_name, expires_at, max_requests, is_trial, referred_by_id, referral_code, username)
             
             # If referred, increment referrer's count
             if referred_by_id:
@@ -443,9 +449,9 @@ async def generate_license_key(
     else:
         async with aiosqlite.connect(DATABASE_PATH) as db:
             cursor = await db.execute("""
-                INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (key_hash, encrypted_key, company_name, expires_at.isoformat(), max_requests, is_trial, referred_by_id, referral_code))
+                INSERT INTO license_keys (key_hash, license_key_encrypted, company_name, expires_at, max_requests_per_day, is_trial, referred_by_id, referral_code, username)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (key_hash, encrypted_key, company_name, expires_at.isoformat(), max_requests, is_trial, referred_by_id, referral_code, username))
             
             # If referred, increment referrer's count
             if referred_by_id:
@@ -602,6 +608,7 @@ async def validate_license_key(key: str) -> dict:
         "is_trial": bool(row_dict.get("is_trial")),
         "referral_code": row_dict.get("referral_code"),
         "referral_count": row_dict.get("referral_count", 0),
+        "username": row_dict.get("username"),
         "requests_remaining": row_dict.get("max_requests_per_day", 0) - (
             row_dict.get("requests_today", 0) if last_request_date == today else 0
         )
