@@ -25,7 +25,8 @@ async def save_inbox_message(
     reply_to_id: int = None,
     platform_message_id: str = None,
     platform_status: str = 'received',
-    original_sender: str = None
+    original_sender: str = None,
+    status: str = None
 ) -> int:
     """Save incoming message to inbox (SQLite & PostgreSQL compatible)."""
 
@@ -109,8 +110,8 @@ async def save_inbox_message(
                 (license_key_id, channel, channel_message_id, sender_id, sender_name,
                  sender_contact, subject, body, received_at, attachments,
                  reply_to_platform_id, reply_to_body_preview, reply_to_sender_name,
-                 reply_to_id, platform_message_id, platform_status, original_sender)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 reply_to_id, platform_message_id, platform_status, original_sender, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 license_id,
@@ -129,7 +130,8 @@ async def save_inbox_message(
                 reply_to_id,
                 platform_message_id,
                 platform_status,
-                original_sender
+                original_sender,
+                status or 'pending'
             ],
         )
 

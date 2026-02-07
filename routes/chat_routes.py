@@ -402,18 +402,48 @@ async def send_approved_message(outbox_id: int, license_id: int):
                         sender_company = (sender_license["company_name"] if sender_license else "Al-Mudeer User")
                         
                         # Deliver as INCOMING message to recipient's license
+                        # Skip AI analysis and set status to 'analyzed' for visibility
                         from models.inbox import save_inbox_message
-                        await save_inbox_message(
+                        new_inbox_id = await save_inbox_message(
                             license_id=target_license["id"],
                             channel="almudeer",
                             body=body,
                             sender_contact=sender_username,
                             sender_name=sender_company,
                             sender_id=sender_username,
-                            received_at=datetime.utcnow()
+                            received_at=datetime.utcnow(),
+                            status='analyzed'
                         )
-                        sent_anything = True
+                        
+                        # Broadcast to recipient instantly if message was saved
+                        if new_inbox_id:
+                            from services.websocket_manager import broadcast_new_message
+                            await broadcast_new_message(target_license["id"], {
+                                "id": new_inbox_id,
+                                "license_key_id": target_license["id"],
+                                "channel": "almudeer",
+                                "sender_contact": sender_username,
+                                "sender_name": sender_company,
+                                "body": body,
+                                "received_at": datetime.utcnow().isoformat(),
+                                "status": "analyzed",
+                                "direction": "incoming"
+                            })
+
+                        # Mark as sent and notify the sender
+                        from services.delivery_status import save_platform_message_id
                         last_platform_id = f"alm_{message['id']}"
+                        await save_platform_message_id(outbox_id, last_platform_id)
+                        
+                        # Explicitly broadcast 'sent' status to the sender for real-time UI update
+                        from services.websocket_manager import broadcast_message_status_update
+                        await broadcast_message_status_update(license_id, {
+                            "outbox_id": outbox_id,
+                            "status": "sent",
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+
+                        sent_anything = True
         
         # 1. SEND TEXT
         if body and not audio_path:
