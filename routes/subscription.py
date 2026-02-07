@@ -88,6 +88,7 @@ class SubscriptionListResponse(BaseModel):
 
 class SubscriptionUpdate(BaseModel):
     """Request to update subscription"""
+    company_name: Optional[str] = Field(None, description="اسم الشركة الجديد", min_length=2, max_length=200)
     is_active: Optional[bool] = None
     max_requests_per_day: Optional[int] = Field(None, ge=10, le=100000)
     days_valid_extension: Optional[int] = Field(None, description="إضافة أيام للصلاحية", ge=0, le=3650)
@@ -373,6 +374,14 @@ async def update_subscription(
             params = []
             param_index = 1
             
+            if update.company_name is not None:
+                if DB_TYPE == "postgresql":
+                    updates.append(f"company_name = ${param_index}")
+                else:
+                    updates.append("company_name = ?")
+                params.append(update.company_name)
+                param_index += 1
+
             if update.is_active is not None:
                 if DB_TYPE == "postgresql":
                     updates.append(f"is_active = ${param_index}")
