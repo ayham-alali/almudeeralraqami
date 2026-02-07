@@ -135,8 +135,16 @@ async def get_conversation_detail(
 ):
     from models.customers import get_customer_for_message
     messages = await get_full_chat_history(license["license_id"], sender_contact, limit)
+    
     if not messages:
-        raise HTTPException(status_code=404, detail="المحادثة غير موجودة")
+        # If no messages, return a skeleton response instead of 404 to avoid blocking UI for new chats
+        return {
+            "sender_name": "عميل",
+            "sender_contact": sender_contact,
+            "messages": [],
+            "total": 0,
+            "lead_score": None
+        }
     
     incoming_msgs = [m for m in messages if m.get("direction") == "incoming"]
     sender_name = incoming_msgs[0].get("sender_name", "عميل") if incoming_msgs else "عميل"
