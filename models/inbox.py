@@ -2154,9 +2154,9 @@ async def upsert_conversation_state(
         # Efficient querying: Get latest from each, compare.
         
         latest_inbox = await fetch_one(db, f"""
-            SELECT id, body, attachments, ai_summary, received_at as created_at, status 
-            FROM inbox_messages 
-            WHERE license_key_id = ? 
+            SELECT id, body, attachments, NULL as ai_summary, received_at as created_at, status, channel
+            FROM inbox_messages
+            WHERE license_key_id = ?
             AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
             AND status != 'pending'
             AND deleted_at IS NULL
@@ -2170,7 +2170,7 @@ async def upsert_conversation_state(
         out_params.append(f"%{sender_contact}%") # LIKE
 
         latest_outbox = await fetch_one(db, f"""
-            SELECT id, body, attachments, NULL as ai_summary, created_at, status 
+            SELECT id, body, attachments, NULL as ai_summary, created_at, status, channel 
             FROM outbox_messages 
             WHERE license_key_id = ? 
             AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?) 
@@ -2238,7 +2238,9 @@ async def upsert_conversation_state(
         ai_summary = last_message.get("ai_summary")
         msg_id = last_message["id"]
         
-        # Check for empty body but present attachments (Audio/File)
+        # Fallback channel from latest message if not provided
+        if not channel:
+            channel = last_message.get("channel")
         # Check for empty body but present attachments (Audio/File)
         if not body.strip():
             attachments = last_message.get("attachments")

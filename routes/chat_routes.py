@@ -453,7 +453,7 @@ async def send_approved_message(outbox_id: int, license_id: int):
 
                             # Ensure sender's Inbox list is updated
                             from models.inbox import upsert_conversation_state
-                            await upsert_conversation_state(license_id, recipient_username)
+                            await upsert_conversation_state(license_id, recipient_username, channel="almudeer")
                             
                             sent_anything = True
                         else:
