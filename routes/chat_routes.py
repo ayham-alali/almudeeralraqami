@@ -393,57 +393,76 @@ async def send_approved_message(outbox_id: int, license_id: int):
             if recipient_username:
                 from db_helper import get_db, fetch_one
                 async with get_db() as db:
-                    # Find target license holder by username
-                    target_license = await fetch_one(db, "SELECT id, company_name FROM license_keys WHERE username = ?", [recipient_username])
-                    if target_license:
-                        # Find sender username & company name
-                        sender_license = await fetch_one(db, "SELECT username, company_name FROM license_keys WHERE id = ?", [license_id])
-                        sender_username = (sender_license["username"] if sender_license else None) or "mudeer_user"
-                        sender_company = (sender_license["company_name"] if sender_license else "Al-Mudeer User")
-                        
-                        # Deliver as INCOMING message to recipient's license
-                        # Skip AI analysis and set status to 'analyzed' for visibility
-                        from models.inbox import save_inbox_message
-                        new_inbox_id = await save_inbox_message(
-                            license_id=target_license["id"],
-                            channel="almudeer",
-                            body=body,
-                            sender_contact=sender_username,
-                            sender_name=sender_company,
-                            sender_id=sender_username,
-                            received_at=datetime.utcnow(),
-                            status='analyzed'
-                        )
-                        
-                        # Broadcast to recipient instantly if message was saved
-                        if new_inbox_id:
-                            from services.websocket_manager import broadcast_new_message
-                            await broadcast_new_message(target_license["id"], {
-                                "id": new_inbox_id,
-                                "license_key_id": target_license["id"],
-                                "channel": "almudeer",
-                                "sender_contact": sender_username,
-                                "sender_name": sender_company,
-                                "body": body,
-                                "received_at": datetime.utcnow().isoformat(),
-                                "status": "analyzed",
-                                "direction": "incoming"
+                    try:
+                        # Find target license holder by username
+                        target_license = await fetch_one(db, "SELECT id, company_name FROM license_keys WHERE username = ?", [recipient_username])
+                        if target_license:
+                            # Find sender username & company name
+                            sender_license = await fetch_one(db, "SELECT username, company_name FROM license_keys WHERE id = ?", [license_id])
+                            sender_username = (sender_license["username"] if sender_license else None) or "mudeer_user"
+                            sender_company = (sender_license["company_name"] if sender_license else "Al-Mudeer User")
+                            
+                            # Deliver as INCOMING message to recipient's license
+                            # Skip AI analysis and set status to 'analyzed' for visibility
+                            from models.inbox import save_inbox_message
+                            # Ensure received_at is stringified for internal delivery
+                            reg_received_at = datetime.utcnow()
+                            from db_helper import DB_TYPE
+                            if DB_TYPE != "postgresql":
+                                reg_received_at = reg_received_at.isoformat()
+
+                            new_inbox_id = await save_inbox_message(
+                                license_id=target_license["id"],
+                                channel="almudeer",
+                                body=body,
+                                sender_contact=sender_username,
+                                sender_name=sender_company,
+                                sender_id=sender_username,
+                                received_at=reg_received_at, # Fixed type consistency
+                                status='analyzed'
+                            )
+                            
+                            # Broadcast to recipient instantly if message was saved
+                            if new_inbox_id:
+                                from services.websocket_manager import broadcast_new_message
+                                await broadcast_new_message(target_license["id"], {
+                                    "id": new_inbox_id,
+                                    "license_key_id": target_license["id"],
+                                    "channel": "almudeer",
+                                    "sender_contact": sender_username,
+                                    "sender_name": sender_company,
+                                    "body": body,
+                                    "received_at": datetime.utcnow().isoformat(),
+                                    "status": "analyzed",
+                                    "direction": "incoming"
+                                })
+
+                            # Mark as sent and notify the sender
+                            from services.delivery_status import save_platform_message_id
+                            last_platform_id = f"alm_{message['id']}"
+                            await save_platform_message_id(outbox_id, last_platform_id)
+                            
+                            # Explicitly broadcast 'sent' status to the sender for real-time UI update
+                            from services.websocket_manager import broadcast_message_status_update
+                            await broadcast_message_status_update(license_id, {
+                                "outbox_id": outbox_id,
+                                "sender_contact": recipient_username, # Added critical field for mobile app mapping
+                                "status": "sent",
+                                "timestamp": datetime.utcnow().isoformat()
                             })
 
-                        # Mark as sent and notify the sender
-                        from services.delivery_status import save_platform_message_id
-                        last_platform_id = f"alm_{message['id']}"
-                        await save_platform_message_id(outbox_id, last_platform_id)
-                        
-                        # Explicitly broadcast 'sent' status to the sender for real-time UI update
-                        from services.websocket_manager import broadcast_message_status_update
-                        await broadcast_message_status_update(license_id, {
-                            "outbox_id": outbox_id,
-                            "status": "sent",
-                            "timestamp": datetime.utcnow().isoformat()
-                        })
-
-                        sent_anything = True
+                            # Ensure sender's Inbox list is updated
+                            from models.inbox import upsert_conversation_state
+                            await upsert_conversation_state(license_id, recipient_username)
+                            
+                            sent_anything = True
+                        else:
+                            from logging_config import get_logger
+                            get_logger(__name__).error(f"Internal delivery failed: Recipient license holder '{recipient_username}' not found.")
+                    except Exception as e:
+                        from logging_config import get_logger
+                        get_logger(__name__).error(f"Error in internal almudeer delivery: {e}", exc_info=True)
+        
         
         # 1. SEND TEXT
         if body and not audio_path:

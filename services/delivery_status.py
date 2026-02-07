@@ -73,7 +73,7 @@ async def update_delivery_status(
             # Find the outbox message by platform_message_id
             row = await fetch_one(
                 db,
-                "SELECT id, inbox_message_id, delivery_status FROM outbox_messages WHERE platform_message_id = ?",
+                "SELECT id, license_key_id, inbox_message_id, delivery_status, recipient_email, recipient_id FROM outbox_messages WHERE platform_message_id = ?",
                 [platform_message_id]
             )
             
@@ -82,9 +82,19 @@ async def update_delivery_status(
                 return False
             
             outbox_id = row["id"]
+            license_id = row["license_key_id"]
             inbox_message_id = row.get("inbox_message_id")
             current_status = row.get("delivery_status", "")
             
+            # Determine the conversation identifier (sender_contact) for status mapping
+            sender_contact = None
+            if inbox_message_id:
+                inbox_msg = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [inbox_message_id])
+                if inbox_msg:
+                    sender_contact = inbox_msg["sender_contact"]
+            if not sender_contact:
+                sender_contact = row["recipient_email"] or row["recipient_id"]
+
             # Status progression: sent -> failed
             # We only track 'sent' (single check) and 'failed'.
             
@@ -110,30 +120,27 @@ async def update_delivery_status(
             
             await commit_db(db)
             
+            # Update the optimized conversation state
+            if sender_contact:
+                from models.inbox import upsert_conversation_state
+                await upsert_conversation_state(license_id, sender_contact)
+
             logger.info(f"Updated delivery status for outbox {outbox_id}: {current_status} -> {status}")
             
             # Broadcast status update via WebSocket
             try:
                 from services.websocket_manager import broadcast_message_status_update
-                
-                # Get license_id for broadcasting
-                msg = await fetch_one(
-                    db,
-                    "SELECT license_key_id FROM outbox_messages WHERE id = ?",
-                    [outbox_id]
+                await broadcast_message_status_update(
+                    license_id,
+                    {
+                        "outbox_id": outbox_id,
+                        "sender_contact": sender_contact, # Critical for mobile app mapping
+                        "inbox_message_id": inbox_message_id,
+                        "platform_message_id": platform_message_id,
+                        "status": status,
+                        "timestamp": ts_value if isinstance(ts_value, str) else ts_value.isoformat()
+                    }
                 )
-                
-                if msg:
-                    await broadcast_message_status_update(
-                        msg["license_key_id"],
-                        {
-                            "outbox_id": outbox_id,
-                            "inbox_message_id": inbox_message_id,
-                            "platform_message_id": platform_message_id,
-                            "status": status,
-                            "timestamp": ts_value if isinstance(ts_value, str) else ts_value.isoformat()
-                        }
-                    )
             except Exception as ws_error:
                 logger.debug(f"WebSocket broadcast failed (non-critical): {ws_error}")
             

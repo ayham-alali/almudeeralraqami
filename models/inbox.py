@@ -103,6 +103,11 @@ async def save_inbox_message(
                 if sender_contact != canonical_contact:
                     sender_contact = canonical_contact
 
+        # Stringify received_at for SQLite to avoid type mismatches
+        reg_received_at = received_at or datetime.utcnow()
+        if DB_TYPE != "postgresql" and isinstance(reg_received_at, datetime):
+            reg_received_at = reg_received_at.isoformat()
+
         await execute_sql(
             db,
             """
@@ -122,7 +127,7 @@ async def save_inbox_message(
                 sender_contact,
                 subject,
                 body,
-                ts_value,
+                reg_received_at,
                 attachments_json,
                 reply_to_platform_id,
                 reply_to_body_preview,
@@ -419,11 +424,21 @@ async def approve_outbox_message(message_id: int, edited_body: str = None):
             )
         await commit_db(db)
 
-        if message_row and message_row["inbox_message_id"]:
-            # Fetch sender_contact from the original inbox message
-            inbox_msg = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [message_row["inbox_message_id"]])
-            if inbox_msg and inbox_msg["sender_contact"]:
-                await upsert_conversation_state(message_row["license_key_id"], inbox_msg["sender_contact"])
+        if message_row:
+            sender_contact = None
+            if message_row["inbox_message_id"]:
+                # Fetch sender_contact from the original inbox message
+                inbox_msg = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [message_row["inbox_message_id"]])
+                if inbox_msg:
+                    sender_contact = inbox_msg["sender_contact"]
+            else:
+                # Fresh outgoing message, use recipient info as the conversation key
+                outbox_msg = await fetch_one(db, "SELECT recipient_email, recipient_id FROM outbox_messages WHERE id = ?", [message_id])
+                if outbox_msg:
+                    sender_contact = outbox_msg["recipient_email"] or outbox_msg["recipient_id"]
+            
+            if sender_contact:
+                await upsert_conversation_state(message_row["license_key_id"], sender_contact)
 
         # Broadcast the new outgoing message to all devices (including the sender's other devices)
         try:
@@ -491,11 +506,21 @@ async def mark_outbox_failed(message_id: int, error_message: str = None):
         )
         await commit_db(db)
 
-        if message_row and message_row["inbox_message_id"]:
-            # Fetch sender_contact from the original inbox message
-            inbox_msg = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [message_row["inbox_message_id"]])
-            if inbox_msg and inbox_msg["sender_contact"]:
-                await upsert_conversation_state(message_row["license_key_id"], inbox_msg["sender_contact"])
+        if message_row:
+            sender_contact = None
+            if message_row["inbox_message_id"]:
+                # Fetch sender_contact from the original inbox message
+                inbox_msg = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [message_row["inbox_message_id"]])
+                if inbox_msg:
+                    sender_contact = inbox_msg["sender_contact"]
+            else:
+                # Fresh outgoing message, use recipient info as the conversation key
+                outbox_msg = await fetch_one(db, "SELECT recipient_email, recipient_id FROM outbox_messages WHERE id = ?", [message_id])
+                if outbox_msg:
+                    sender_contact = outbox_msg["recipient_email"] or outbox_msg["recipient_id"]
+            
+            if sender_contact:
+                await upsert_conversation_state(message_row["license_key_id"], sender_contact)
 
         # Broadcast status update
         try:
@@ -534,11 +559,21 @@ async def mark_outbox_sent(message_id: int):
         )
         await commit_db(db)
 
-        if message_row and message_row["inbox_message_id"]:
-            # Fetch sender_contact from the original inbox message
-            inbox_msg = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [message_row["inbox_message_id"]])
-            if inbox_msg and inbox_msg["sender_contact"]:
-                await upsert_conversation_state(message_row["license_key_id"], inbox_msg["sender_contact"])
+        if message_row:
+            sender_contact = None
+            if message_row["inbox_message_id"]:
+                # Fetch sender_contact from the original inbox message
+                inbox_msg = await fetch_one(db, "SELECT sender_contact FROM inbox_messages WHERE id = ?", [message_row["inbox_message_id"]])
+                if inbox_msg:
+                    sender_contact = inbox_msg["sender_contact"]
+            else:
+                # Fresh outgoing message, use recipient info as the conversation key
+                outbox_msg = await fetch_one(db, "SELECT recipient_email, recipient_id FROM outbox_messages WHERE id = ?", [message_id])
+                if outbox_msg:
+                    sender_contact = outbox_msg["recipient_email"] or outbox_msg["recipient_id"]
+            
+            if sender_contact:
+                await upsert_conversation_state(message_row["license_key_id"], sender_contact)
 
         # Broadcast status update
         try:
