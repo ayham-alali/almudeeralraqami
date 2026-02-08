@@ -1852,6 +1852,8 @@ async def clear_conversation_messages(license_id: int, sender_contact: str) -> d
     Keep the conversation entry in the inbox list but with zero counts.
     """
     from datetime import datetime, timezone
+    now = datetime.utcnow()
+    ts_value = now if DB_TYPE == "postgresql" else now.isoformat()
     
     async with get_db() as db:
         # Get all aliases for this sender to ensure we clear EVERYTHING
