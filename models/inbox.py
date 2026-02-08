@@ -746,35 +746,81 @@ async def _get_sender_aliases(db, license_id: int, sender_contact: str) -> tuple
     
     placeholders = ", ".join(["?" for _ in check_ids])
     
-    # Query for all aliases
+    # Query for all aliases across both tables
     params = [license_id]
     params.extend(check_ids)  # sender_contact IN
     params.extend(check_ids)  # sender_id IN
     params.append(f"%{sender_contact}%")  # LIKE
     
-    aliases = await fetch_all(db, f"""
-        SELECT DISTINCT sender_contact, sender_id 
+    # Use UNION to search both tables
+    query = f"""
+        SELECT sender_contact, sender_id 
         FROM inbox_messages 
         WHERE license_key_id = ?
         AND (sender_contact IN ({placeholders}) OR sender_id IN ({placeholders}) OR sender_contact LIKE ?)
-        AND deleted_at IS NULL
-    """, params)
+        
+        UNION
+        
+        SELECT recipient_email as sender_contact, recipient_id as sender_id
+        FROM outbox_messages
+        WHERE license_key_id = ?
+        AND (recipient_email IN ({placeholders}) OR recipient_id IN ({placeholders}) OR recipient_email LIKE ?)
+    """
+    # Duplicate params for the second SELECT in UNION
+    union_params = params + params
+    
+    aliases = await fetch_all(db, query, union_params)
     
     # Build comprehensive identifier sets
     all_contacts = set([sender_contact])
     all_ids = set()
     
+    # Seed IDs from input if it looks like a Telegram ID
+    for cid in check_ids:
+        if cid.isdigit():
+            all_ids.add(cid)
+
     for row in aliases:
         if row.get("sender_contact"):
             all_contacts.add(row["sender_contact"])
+            # If it's a tg: prefixed ID, extract the ID too
+            if row["sender_contact"].startswith("tg:") and row["sender_contact"][3:].isdigit():
+                all_ids.add(row["sender_contact"][3:])
         if row.get("sender_id"):
-            all_ids.add(str(row["sender_id"]))
-    
-    # Also check if sender_contact looks like a plain ID and add it to all_ids
-    if sender_contact.isdigit():
-        all_ids.add(sender_contact)
-    
-    return all_contacts, all_ids
+            sid = str(row["sender_id"])
+            all_ids.add(sid)
+            # Ensure tg: prefixed version is in contacts for thorough matching
+            all_contacts.add(f"tg:{sid}")
+
+    # --- SECOND PASS: Find cross-linked aliases (Hop-2) ---
+    # e.g. if we found ID '123' from contact '@alice', now find all other contacts listed for ID '123'
+    if all_contacts or all_ids:
+        pass2_contacts = list(all_contacts)
+        pass2_ids = list(all_ids)
+        
+        # Build query for anything matching what we ALREADY found
+        placeholders_c = ", ".join(["?" for _ in pass2_contacts]) if pass2_contacts else "'__PLACEHOLDER__'"
+        placeholders_i = ", ".join(["?" for _ in pass2_ids]) if pass2_ids else "'__PLACEHOLDER__'"
+        
+        query2 = f"""
+            SELECT sender_contact, sender_id FROM inbox_messages 
+            WHERE license_key_id = ? AND (sender_contact IN ({placeholders_c}) OR sender_id IN ({placeholders_i}))
+            UNION
+            SELECT recipient_email as sender_contact, recipient_id as sender_id FROM outbox_messages
+            WHERE license_key_id = ? AND (recipient_email IN ({placeholders_c}) OR recipient_id IN ({placeholders_i}))
+        """
+        params2 = [license_id] + pass2_contacts + pass2_ids + [license_id] + pass2_contacts + pass2_ids
+        
+        aliases2 = await fetch_all(db, query2, params2)
+        for row in aliases2:
+            if row.get("sender_contact"):
+                all_contacts.add(row["sender_contact"])
+            if row.get("sender_id"):
+                sid = str(row["sender_id"])
+                all_ids.add(sid)
+                all_contacts.add(f"tg:{sid}")
+
+    return tuple(all_contacts), tuple(all_ids)
 
 
 def _parse_message_row(row: dict) -> dict:
@@ -1809,8 +1855,14 @@ async def soft_delete_conversation(license_id: int, sender_contact: str) -> dict
             out_params.extend(list(all_ids))
             
         out_where = " OR ".join(out_conditions) if out_conditions else "1=0"
+        
+        # Diagnostic logging
+        from logging_config import get_logger
+        logger = get_logger(__name__)
+        logger.info(f"[CLEAR] Starting soft delete for {sender_contact}. Aliases: contacts={all_contacts}, ids={all_ids}")
+
         # Update Inbox
-        await execute_sql(
+        res_in = await execute_sql(
             db,
             f"""
             UPDATE inbox_messages 
@@ -1834,15 +1886,28 @@ async def soft_delete_conversation(license_id: int, sender_contact: str) -> dict
             """,
             out_params
         )
+        # Note: postgres connection.execute doesn't always return rowcount easily via this helper
+        # but the query should execute.
+        
+        await commit_db(db)
+        logger.info(f"[CLEAR] Soft delete completed for {sender_contact}")
         
         await commit_db(db)
         
-        # Explicitly delete the conversation entry so it's removed from Inbox
-        await execute_sql(
-            db,
-            "DELETE FROM inbox_conversations WHERE license_key_id = ? AND sender_contact = ?",
-            [license_id, sender_contact]
-        )
+        # Explicitly delete ALL conversation entries for discovered personas
+        if all_contacts:
+            placeholders_ic = ", ".join(["?" for _ in all_contacts])
+            await execute_sql(
+                db,
+                f"DELETE FROM inbox_conversations WHERE license_key_id = ? AND sender_contact IN ({placeholders_ic})",
+                [license_id] + list(all_contacts)
+            )
+        else:
+            await execute_sql(
+                db,
+                "DELETE FROM inbox_conversations WHERE license_key_id = ? AND sender_contact = ?",
+                [license_id, sender_contact]
+            )
         await commit_db(db)
     
     return {"success": True, "message": "تم حذف المحادثة بنجاح"}
@@ -1893,6 +1958,10 @@ async def clear_conversation_messages(license_id: int, sender_contact: str) -> d
             
         out_where = " OR ".join(out_conditions) if out_conditions else "1=0"
 
+        from logging_config import get_logger
+        logger = get_logger(__name__)
+        logger.info(f"[CLEAR_MESSAGES] Starting messages clear for {sender_contact}. Aliases: contacts={all_contacts}, ids={all_ids}")
+
         # 1. Soft delete Inbox Messages
         await execute_sql(
             db,
@@ -1920,8 +1989,9 @@ async def clear_conversation_messages(license_id: int, sender_contact: str) -> d
         )
         await commit_db(db)
         
-    # 3. Reset conversation state (cached fields in inbox_conversations)
-    await upsert_conversation_state(license_id, sender_contact)
+    # 3. Reset conversation state for all discovered personas
+    for contact in all_contacts:
+        await upsert_conversation_state(license_id, contact)
     
     return {"success": True, "message": "تم مسح الرسائل بنجاح"}
 
